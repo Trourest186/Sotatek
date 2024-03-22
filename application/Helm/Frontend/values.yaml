@@ -1,0 +1,53 @@
+# Namespace for platform
+namespace: platform-frontend
+
+# Duplicate for pod 
+replicaCount: 2
+
+# Image for backend application
+image:
+  repository: registry.sotaicg.com/testk8s/be-platform
+  pullPolicy: Always
+  tag: latest
+
+# Secret to pull image from registry.sotaicg.com repository
+imagePullSecrets:
+  - name: registry-sotaicg-secret
+
+# Deployment
+deployment:
+  name: platform-frontend-deployment
+
+# Pod
+pod:
+  name: platform-frontend-pod
+  containerPort: 80
+  protocol: TCP
+  protocol_name: http
+## Empty
+
+# Service or Stateful
+service:
+  name: platform-frontend-servcie
+  type: NodePort # Need Check
+  port: 80
+  nodePort: 31000
+
+# Ingress for application and minio object 
+# Application
+frontend_ingress:
+  secname: frontend-secretdns
+  enabled: true
+  name: datalake-platform-frontend-ingress
+  className: nginx
+  host: data-platform.sotaicg.com
+  path: /
+  serviceName: {{ .service.name }}
+  servicePort: 80
+  tls:
+    - secretName: frontend-secretdns
+      hosts:
+        - data-platform.sotaicg.com
+# Need for multipe path for each ingress
+
+# Secret

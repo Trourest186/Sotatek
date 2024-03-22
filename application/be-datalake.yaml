@@ -25,5 +25,7 @@ spec:
           envFrom:
             - secretRef:
                 name: backend-environment
+      nodeSelector:
+        kubernetes.io/hostname: epc02
                 
 

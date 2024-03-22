@@ -1,0 +1,72 @@
+# Namespace for platform
+namespace: platform-backend
+
+# Duplicate for pod 
+replicaCount: 2
+
+# Image for backend application
+image:
+  repository: registry.sotaicg.com/testk8s/be-platform
+  pullPolicy: Always
+  tag: v18.0
+
+# Secret to pull image from registry.sotaicg.com repository
+imagePullSecrets:
+  - name: registry-sotaicg-secret
+
+# Deployment
+deployment:
+  name: platform-backend-deployment
+
+# Pod
+pod:
+  name: platform-backend-pod
+  containerPort: 8080
+  protocol: TCP
+  protocol_name: http
+## Empty
+
+# Service or Stateful
+service:
+  name: platform-backend-servcie
+  type: NodePort # Need Check
+  port: 8080
+  nodePort: 31000
+
+# Ingress for application and minio object 
+# Application
+backend_ingress:
+  secname: backend-secretdns
+  enabled: true
+  name: datalake-platform-be-ingress
+  className: nginx
+  host: data-platform-api.sotaicg.com
+  path: /
+  serviceName: {{ .service.name }}
+  servicePort: 80
+  tls:
+    - secretName: backend-secretdns
+      hosts:
+        - data-platform-api.sotaicg.com
+
+minio_ingress:
+  secname: minio-secretdns
+  enabled: true
+  name: minio-ingress
+  className: nginx
+  host: datalakev2-console.sotaicg.com
+  path: /
+  serviceName: minio-platform # Need check to follow minio 
+  servicePort: 9000 # Need check for multiple pod
+  tls:
+    - secretName: minio-secretdns
+      hosts:
+        - datalakev2-console.sotaicg.com  
+
+
+# Need for multipe path for each ingress
+
+# Secret
+# Environment-backend
+environment_backend:
+  name: environment-backend

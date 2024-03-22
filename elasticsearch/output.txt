@@ -1,4 +1,36 @@
 ---
+# Source: elasticsearch/templates/networkpolicy.yaml
+kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: elasticsearch-master
+  labels:
+    heritage: "Helm"
+    release: "release-name"
+    chart: "elasticsearch"
+    app: "elasticsearch-master"
+spec:
+  podSelector:
+    matchLabels:
+      app: "elasticsearch-master"
+  ingress:  # Allow inbound connections
+    # For HTTP access
+    - ports:
+      - port: 9200
+      from:
+        # From authorized Pods (having the correct label)
+        - podSelector:
+            matchLabels:
+              elasticsearch-master-http-client: "true"
+          # From authorized namespaces
+          namespaceSelector:
+            matchLabels:
+              app: be
+            # Or from custom additional rules
+        - podSelector:
+            matchLabels:
+              app: be
+---
 # Source: elasticsearch/templates/poddisruptionbudget.yaml
 apiVersion: policy/v1
 kind: PodDisruptionBudget
@@ -9,6 +41,37 @@ spec:
   selector:
     matchLabels:
       app: "elasticsearch-master"
+---
+# Source: elasticsearch/templates/secret-cert.yaml
+apiVersion: v1
+kind: Secret
+type: kubernetes.io/tls
+metadata:
+  name: elasticsearch-master-certs
+  labels:
+    app: elasticsearch-master
+    chart: "elasticsearch"
+    heritage: Helm
+    release: release-name
+data:
+  tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURpRENDQW5DZ0F3SUJBZ0lSQUk1eDU3UmdaOWY0MU5vY1RwVElVYWt3RFFZSktvWklodmNOQVFFTEJRQXcKR3pFWk1CY0dBMVVFQXhNUVpXeGhjM1JwWTNObFlYSmphQzFqWVRBZUZ3MHlOREF6TWpJd056RTFNamxhRncweQpOVEF6TWpJd056RTFNamxhTUI4eEhUQWJCZ05WQkFNVEZHVnNZWE4wYVdOelpXRnlZMmd0YldGemRHVnlNSUlCCklqQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FROEFNSUlCQ2dLQ0FRRUF6TEEzQWFtdXBxRnByM3o5Ui9NVkE4ZWgKb1FvTk9udmZ3Tks0NzhsWGExYytGb052Qk8xM3FjSlJjQ2tNVDZ4THBlbUFlVVdBVnlGWUVMUmVkcGRLbUdZTAozVzZFdklPdzJNYW9ENmxYWXVRZCtrQTFZZ1psVDN5VlJkdmgvNVFxS0ZWSVVCV2V2a1F4bFZCRkxyUXdvY0NkCjlIelhXUUJVZlJJeVVFUzhHUFJVT3Z6cXVlRTBzcFFvV1BFNGZVejl6ODlrM214dmtoSFFCdUc5NmYyTlowT3EKdGkxL2wrN2ZDL0EvVnBWdGJPaUlWNiswNUo0Vi9RSFAxQ29wcFVKbGM2dFNuQVFvSm1rWVpUWWthOFdCMDRHdQpyZnVxRjVVZHNjcEtXTW5IUlZLMmR2ZEkwb2NLZzhpS2JjQjRpeFZNb09EcDFRbE5wcWduakhpcmpEWUw1UUlECkFRQUJvNEhDTUlHL01BNEdBMVVkRHdFQi93UUVBd0lGb0RBZEJnTlZIU1VFRmpBVUJnZ3JCZ0VGQlFjREFRWUkKS3dZQkJRVUhBd0l3REFZRFZSMFRBUUgvQkFJd0FEQWZCZ05WSFNNRUdEQVdnQlQ4cUFzSy9GeXVlckhLczR4dgo4ZEYvQjdocVhEQmZCZ05WSFJFRVdEQldnaFJsYkdGemRHbGpjMlZoY21Ob0xXMWhjM1JsY29JY1pXeGhjM1JwClkzTmxZWEpqYUMxdFlYTjBaWEl1WkdWbVlYVnNkSUlnWld4aGMzUnBZM05sWVhKamFDMXRZWE4wWlhJdVpHVm0KWVhWc2RDNXpkbU13RFFZSktvWklodmNOQVFFTEJRQURnZ0VCQUtXSFV4a0NhK3EwQVpyTDJ2VTZudHdVc2g3cApSMjNseWwzUXZpbnZEQnFDRGJVdWF2SUZqRytNVEMvTEJGd2Qyd2k4L2ZWMkNXVEJnczNXMm94Qm1BQ3hzSVExCnZKQ1FxNVdLZGl6R2s5UEpkU25Ibk83NWxwblM4NUtqOGpHMzNsRGhGTngwVXJTQm0vR2YvZzhpOFZhelpSbFoKcHBVY0x5aC9vOVZsK0M2L1Mrc2VWY092Y3JPaTFHWGt2SUxqU3NjQ3k3ZStZa0E5YTNhYUlxaUJySFdpRDNhMAo3cHEza0NiTk05VXJOOFROeUlTcFRTUVNFR0wraGR4bmVOWnlzNHZBWlMrcW1Xb1MvQkpjREVtRzNaWWpSNFp6ClB0aTYwRy83WGdCczhONzZZYTcwTFdMb2dYMmtLd29nUnJvdUc2TmNNOEpOZWw0bjFLRWtwUFlmZUtRPQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==
+  tls.key: LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFcEFJQkFBS0NBUUVBekxBM0FhbXVwcUZwcjN6OVIvTVZBOGVob1FvTk9udmZ3Tks0NzhsWGExYytGb052CkJPMTNxY0pSY0NrTVQ2eExwZW1BZVVXQVZ5RllFTFJlZHBkS21HWUwzVzZFdklPdzJNYW9ENmxYWXVRZCtrQTEKWWdabFQzeVZSZHZoLzVRcUtGVklVQldldmtReGxWQkZMclF3b2NDZDlIelhXUUJVZlJJeVVFUzhHUFJVT3Z6cQp1ZUUwc3BRb1dQRTRmVXo5ejg5azNteHZraEhRQnVHOTZmMk5aME9xdGkxL2wrN2ZDL0EvVnBWdGJPaUlWNiswCjVKNFYvUUhQMUNvcHBVSmxjNnRTbkFRb0pta1laVFlrYThXQjA0R3VyZnVxRjVVZHNjcEtXTW5IUlZLMmR2ZEkKMG9jS2c4aUtiY0I0aXhWTW9PRHAxUWxOcHFnbmpIaXJqRFlMNVFJREFRQUJBb0lCQUVpM0tUTnNCbUduNGhXMwp2M3I1L2pNempsWFpiazJpaUNER08zRGtCQ3hiOS9DampLTWhnV3RMWHdjTGJoWTN6VUFKcmR4bk5tcTlxNzF6CmRrT0hCN2NRT1pMV21rMG1NNE12UDdFZ3BheTZBWFJQcnljOXdtdjBoRXNuRENoeGlIQi9xNHJYdzJjd2JyVHUKcVVVb09rYWNXUURzQU16YmN5aGplSUJQaXNzS0RzRnpxdHlxVmRVZ05TTGkraktHVENLRFpaRDRZMFZTUGJDbQo4QkdaODVxSDVWL1NDU00yTTZWeHFxYlVtdkdjdXF4VExkeE1KM3pjcVJKU1F0Z3BySlJha0RKY1Q3cU9Nd0VvCjNha0NpT1MvaXpRK0hQRjNyR2UvM0c3OEl5amgxbFB4YUVDKzNLRnFrK3h2OVNQTFN3VGxUcktVV251dnFzdWYKbDY1Ylo4RUNnWUVBN3FUTThldXZYOHVwLzV6U2ROWTJ0aUxrWHhhSVlaVnFmQm1ndUozOCtnbGoxbVhmV0RJQQpEcVI1cVBKblVRZDJJaFJTYnplVTliSTJ0SDQxNFNkeUhETEgrNlhVYTc3bW9hMUpsTHplaHd1Ri9PRC9IelBUCmdJcUp5NUtLbUtvUFJGQzRDaG1iWjY1dGNoRzhVMEJadzQ0QWZxU0lMdXZUa2NQQ3lsdjJFVDBDZ1lFQTI1TTIKdzRSYlhoeDhJbExINkxELzZGdEZEY2dXMmd2OHBJbHR5WFBxaHZWVlg2R2RCcU8ycVRnN3pjZ2pjcGw3VXlRagpidVNzWHBVSXY3dEEwbVRUYkRnZmVzd1c4MnE0bkdzaDBLV055TUpOL0h3OS8xWi84dzYwNzlKeUZ4WXUreEc3CmJXaDIyUE5ua2tvcEhocUFRcGI1Y3Y5aTZoVVVyeXR5Wld3ZXY4a0NnWUJncm9XVlVTMjR1ck5CcXBBYzQ1aEEKeS93SGhnSjB2bXJvb2gxYURpK3FRTm1neDU3bmhVSStyR1haaTNOT0FaN2JpYTRuL3JXcm9LckhEd2JYRS9zSAo3NDdUcGNoY2FuZlhjblFIL1VpT0g1NEY2RVdUcDVSOVZDTWxSVlkvS1U2TUY4T24yOTM0OEZMSXp1U2tPY0xrCkZnaWZSaHNpSDBxVW1HRzNSL0IxNVFLQmdRQ1Mrb2NVOTFzbHN4R1E5REttMnh4aUQvNDRUSENuZ3BDYUh2Z2oKZW5sSjM1MUhSMnBTRUhKcjhaMXVrUUxSYWxXNEFKL0xVanpqandWdE9rNFl4NjhTYUxzQnV1MitBUGtVazAzdQpXWE9BS0RpRnd6REk0OEVBRlI4ZXpaTGJTMWtsYk9nMlExQVN4MVBVQTlwa01UOGIwKzJrZ2JsWGtjYm52c0J6CmpaMURxUUtCZ1FEcytYUjZaNnBUWjVpNTQyTDh0TWFmRVRsV0k1YnlEcDdJaWgwOHYxT2VEMjRQR3owRVpqenYKWldpQjBCVmdPeXRaUU1rd29acGU2SHNLbTJmVzdBMjJ5eWMxa2EyVzRHeG95a21xQUwwSW9wRW5mNHFTUy81MwpVVi9kT294ZzBaM2s5WFF5VGdiNlU5LzR3OStMY29jajF6VHBweEk5eEt3M0tEK3h2QXBCc2c9PQotLS0tLUVORCBSU0EgUFJJVkFURSBLRVktLS0tLQo=
+  ca.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURJVENDQWdtZ0F3SUJBZ0lRQ2g2VHhXdmhQclNRbWxYb0E4MkxIVEFOQmdrcWhraUc5dzBCQVFzRkFEQWIKTVJrd0Z3WURWUVFERXhCbGJHRnpkR2xqYzJWaGNtTm9MV05oTUI0WERUSTBNRE15TWpBM01UVXlPVm9YRFRJMQpNRE15TWpBM01UVXlPVm93R3pFWk1CY0dBMVVFQXhNUVpXeGhjM1JwWTNObFlYSmphQzFqWVRDQ0FTSXdEUVlKCktvWklodmNOQVFFQkJRQURnZ0VQQURDQ0FRb0NnZ0VCQUxQVER1bEhNeDYvOEZ3V2p2M2ZPU1JEdmVkY01TUVoKdHhvVGRPcm1CU0wxWW9LaUNtOFFGdWJ3Vk13RlZFUSsxaEl2TDhJWGVBRkU2MVk0RUVNelVNQ25Nd1k1TlhNQgpzbDdnenRIMUs4U2FjdWx0YTA3M3FsS3VuTmpqL0hyT1J4UUhIUEpZM3Q4a0wyZnNGL2NxeGorUW1QNklvYmVjCmpuV0E3dDRyY3RQNURwQlRBanEyVVV4c2cxTmxObEZPeHQ5VHluTy93SUlQWXBYbmdFU2ZQOEM2U05mWTlxZEwKcEZCWnlzZU0zZVpiYm1ONGxNaHJKYXhUSGY2L1JieXJTdytISi9xNVZZQnJpYnEvNGE3NzVWMWViaWpzUFNrcQptZTVYUGxmenRuV0l4RzJlcXAreWdyL0VNRUNNa1NJbi9hWW9KZHBYZmI3cVZENStaSjlhYnFNQ0F3RUFBYU5oCk1GOHdEZ1lEVlIwUEFRSC9CQVFEQWdLa01CMEdBMVVkSlFRV01CUUdDQ3NHQVFVRkJ3TUJCZ2dyQmdFRkJRY0QKQWpBUEJnTlZIUk1CQWY4RUJUQURBUUgvTUIwR0ExVWREZ1FXQkJUOHFBc0svRnl1ZXJIS3M0eHY4ZEYvQjdocQpYREFOQmdrcWhraUc5dzBCQVFzRkFBT0NBUUVBQy9SelRiYjd3R1lCMTgwNG8yVncxendSRVM2VFVCblp2clNNClpOSWs4V2pDUkhXWDhuZUdLek1DWEUzN1RacWxmcVNwNmZpRXp2VmYrQUI3K1M5TkxXaU9EVWppYjZUY0w4WmIKOUJ2QWljYUpvdTVHKzJ5UFBhMEhDUEV4dlJhRisrTHo2Si9QRzIwaW9PSHRXYWVDZWRWaU02bmRPTjl5TVB3VwpvVTYrWVQ3eGtDdDVDMlFJL1N3Vm5BUzVlTXlPSGVEOE5SbWhzL3pXM3V2UmZVdmZibkp4emVBSldhd202OFhLCnRTeTQxY0Z0Y3NrNUd4cGk3MnlucVJlTzlQZ3pBQ1JvY0hVVUFtMTIrR0hJL0hxeHMvTVRWbkpSTG5wTndZcWMKN3E3WUV0TjREMzQzMEpTRCsvanJ2TDF0TnBQYTJoVHpnWkhYeFhiR0tncGFxRXhhMkE9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==
+---
+# Source: elasticsearch/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: elasticsearch-master-credentials
+  labels:
+    heritage: "Helm"
+    release: "release-name"
+    chart: "elasticsearch"
+    app: "elasticsearch-master"
+type: Opaque
+data:
+  username: ZWxhc3RpYw==
+  password: "STF3d2hKYkFLYTZ3bGVkNQ=="
 ---
 # Source: elasticsearch/templates/service.yaml
 kind: Service
@@ -117,6 +180,9 @@ spec:
             topologyKey: kubernetes.io/hostname
       terminationGracePeriodSeconds: 120
       volumes:
+        - name: elasticsearch-certs
+          secret:
+           secretName: elasticsearch-master-certs
       enableServiceLinks: true
       initContainers:
       - name: configure-sysctl
@@ -235,15 +301,43 @@ spec:
             value: "elasticsearch"
           - name: network.host
             value: "0.0.0.0"
+          - name: ELASTIC_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: elasticsearch-master-credentials
+                key: password
+          - name: xpack.security.enabled
+            value: "true"
+          - name: xpack.security.transport.ssl.enabled
+            value: "true"
+          - name: xpack.security.http.ssl.enabled
+            value: "true"
+          - name: xpack.security.transport.ssl.verification_mode
+            value: "certificate"
+          - name: xpack.security.transport.ssl.key
+            value: "/usr/share/elasticsearch/config/certs/tls.key"
+          - name: xpack.security.transport.ssl.certificate
+            value: "/usr/share/elasticsearch/config/certs/tls.crt"
+          - name: xpack.security.transport.ssl.certificate_authorities
+            value: "/usr/share/elasticsearch/config/certs/ca.crt"
+          - name: xpack.security.http.ssl.key
+            value: "/usr/share/elasticsearch/config/certs/tls.key"
+          - name: xpack.security.http.ssl.certificate
+            value: "/usr/share/elasticsearch/config/certs/tls.crt"
+          - name: xpack.security.http.ssl.certificate_authorities
+            value: "/usr/share/elasticsearch/config/certs/ca.crt"
         volumeMounts:
           - name: "elasticsearch-master"
             mountPath: /usr/share/elasticsearch/data
+          - name: elasticsearch-certs
+            mountPath: /usr/share/elasticsearch/config/certs
+            readOnly: true
 ---
 # Source: elasticsearch/templates/test/test-elasticsearch-health.yaml
 apiVersion: v1
 kind: Pod
 metadata:
-  name: "release-name-atxrg-test"
+  name: "release-name-rbohn-test"
   annotations:
     "helm.sh/hook": test
     "helm.sh/hook-delete-policy": hook-succeeded
@@ -252,7 +346,7 @@ spec:
     fsGroup: 1000
     runAsUser: 1000
   containers:
-  - name: "release-name-ozvwq-test"
+  - name: "release-name-fgugg-test"
     env:
       - name: ELASTIC_PASSWORD
         valueFrom:

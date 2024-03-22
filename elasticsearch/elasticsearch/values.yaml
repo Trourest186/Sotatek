@@ -7,24 +7,20 @@ nodeGroup: "master"
 masterService: ""
 
 # Elasticsearch roles that will be applied to this nodeGroup
-# These will be set as environment variables. E.g. node.roles=master
-# https://www.elastic.co/guide/en/elasticsearch/reference/current/modules-node.html#node-roles
+# These will be set as environment variables. E.g. node.master=true
 roles:
-  - master
-  - data
-  - data_content
-  - data_hot
-  - data_warm
-  - data_cold
-  - ingest
-  - ml
-  - remote_cluster_client
-  - transform
+  master: "true"
+  ingest: "true"
+  data: "true"
+  remote_cluster_client: "true"
+  ml: "true"
 
 replicas: 3
 minimumMasterNodes: 2
 
 esMajorVersion: ""
+
+clusterDeprecationIndexing: "false"
 
 # Allows you to add any config files in /usr/share/elasticsearch/config/
 # such as elasticsearch.yml and log4j2.properties
@@ -34,8 +30,6 @@ esConfig: {}
 #      nestedkey: value
 #  log4j2.properties: |
 #    key = value
-
-createCert: true
 
 esJvmOptions: {}
 #  processors.options: |
@@ -55,11 +49,6 @@ envFrom: []
 # - configMapRef:
 #     name: config-map
 
-# Disable it to use your own elastic-credential Secret.
-secret:
-  enabled: true
-  password: "" # generated randomly if not defined
-
 # A list of secrets and their paths to mount inside the pod
 # This is useful for mounting certificates for security and for mounting
 # the X-Pack license
@@ -76,11 +65,12 @@ hostAliases: []
 #  - "bar.local"
 
 image: "docker.elastic.co/elasticsearch/elasticsearch"
-imageTag: "8.5.1"
+imageTag: "7.17.3"
 imagePullPolicy: "IfNotPresent"
 
-podAnnotations: {}
-# iam.amazonaws.com/role: es-cluster
+podAnnotations:
+  {}
+  # iam.amazonaws.com/role: es-cluster
 
 # additionals labels
 labels: {}
@@ -95,13 +85,14 @@ resources:
     cpu: "1000m"
     memory: "2Gi"
 
-initResources: {}
-# limits:
-#   cpu: "25m"
-#   # memory: "128Mi"
-# requests:
-#   cpu: "25m"
-#   memory: "128Mi"
+initResources:
+  {}
+  # limits:
+  #   cpu: "25m"
+  #   # memory: "128Mi"
+  # requests:
+  #   cpu: "25m"
+  #   memory: "128Mi"
 
 networkHost: "0.0.0.0"
 
@@ -109,7 +100,7 @@ volumeClaimTemplate:
   accessModes: ["ReadWriteOnce"]
   resources:
     requests:
-      storage: 30Gi
+      storage: 10Gi
 
 rbac:
   create: false
@@ -143,24 +134,28 @@ persistence:
     enabled: false
   annotations: {}
 
-extraVolumes: []
-# - name: extras
-#   emptyDir: {}
+extraVolumes:
+  []
+  # - name: extras
+  #   emptyDir: {}
 
-extraVolumeMounts: []
-# - name: extras
-#   mountPath: /usr/share/extras
-#   readOnly: true
+extraVolumeMounts:
+  []
+  # - name: extras
+  #   mountPath: /usr/share/extras
+  #   readOnly: true
 
-extraContainers: []
-# - name: do-something
-#   image: busybox
-#   command: ['do', 'something']
+extraContainers:
+  []
+  # - name: do-something
+  #   image: busybox
+  #   command: ['do', 'something']
 
-extraInitContainers: []
-# - name: do-something
-#   image: busybox
-#   command: ['do', 'something']
+extraInitContainers:
+  []
+  # - name: do-something
+  #   image: busybox
+  #   command: ['do', 'something']
 
 # This is the PriorityClass settings as defined in
 # https://kubernetes.io/docs/concepts/configuration/pod-priority-preemption/#priorityclass
@@ -187,7 +182,7 @@ podManagementPolicy: "Parallel"
 # If you experience slow pod startups you probably want to set this to `false`.
 enableServiceLinks: true
 
-protocol: https
+protocol: http
 httpPort: 9200
 transportPort: 9300
 
@@ -238,7 +233,7 @@ readinessProbe:
   successThreshold: 3
   timeoutSeconds: 5
 
-# https://www.elastic.co/guide/en/elasticsearch/reference/current/cluster-health.html#request-params wait_for_status
+# https://www.elastic.co/guide/en/elasticsearch/reference/7.17/cluster-health.html#request-params wait_for_status
 clusterHealthCheckParams: "wait_for_status=green&timeout=1s"
 
 ## Use an alternate scheduler.
@@ -272,25 +267,26 @@ nameOverride: ""
 fullnameOverride: ""
 healthNameOverride: ""
 
-lifecycle: {}
-# preStop:
-#   exec:
-#     command: ["/bin/sh", "-c", "echo Hello from the postStart handler > /usr/share/message"]
-# postStart:
-#   exec:
-#     command:
-#       - bash
-#       - -c
-#       - |
-#         #!/bin/bash
-#         # Add a template to adjust number of shards/replicas
-#         TEMPLATE_NAME=my_template
-#         INDEX_PATTERN="logstash-*"
-#         SHARD_COUNT=8
-#         REPLICA_COUNT=1
-#         ES_URL=http://localhost:9200
-#         while [[ "$(curl -s -o /dev/null -w '%{http_code}\n' $ES_URL)" != "200" ]]; do sleep 1; done
-#         curl -XPUT "$ES_URL/_template/$TEMPLATE_NAME" -H 'Content-Type: application/json' -d'{"index_patterns":['\""$INDEX_PATTERN"\"'],"settings":{"number_of_shards":'$SHARD_COUNT',"number_of_replicas":'$REPLICA_COUNT'}}'
+lifecycle:
+  {}
+  # preStop:
+  #   exec:
+  #     command: ["/bin/sh", "-c", "echo Hello from the postStart handler > /usr/share/message"]
+  # postStart:
+  #   exec:
+  #     command:
+  #       - bash
+  #       - -c
+  #       - |
+  #         #!/bin/bash
+  #         # Add a template to adjust number of shards/replicas
+  #         TEMPLATE_NAME=my_template
+  #         INDEX_PATTERN="logstash-*"
+  #         SHARD_COUNT=8
+  #         REPLICA_COUNT=1
+  #         ES_URL=http://localhost:9200
+  #         while [[ "$(curl -s -o /dev/null -w '%{http_code}\n' $ES_URL)" != "200" ]]; do sleep 1; done
+  #         curl -XPUT "$ES_URL/_template/$TEMPLATE_NAME" -H 'Content-Type: application/json' -d'{"index_patterns":['\""$INDEX_PATTERN"\"'],"settings":{"number_of_shards":'$SHARD_COUNT',"number_of_replicas":'$REPLICA_COUNT'}}'
 
 sysctlInitContainer:
   enabled: true
@@ -308,49 +304,57 @@ networkPolicy:
 
   http:
     enabled: false
-    ## if explicitNamespacesSelector is not set or set to {}, only client Pods being in the networkPolicy's namespace
-    ## and matching all criteria can reach the DB.
-    ## But sometimes, we want the Pods to be accessible to clients from other namespaces, in this case, we can use this
-    ## parameter to select these namespaces
-    ##
+    # if explicitNamespacesSelector is not set or set to {}, only client Pods being in the networkPolicy's namespace
+    # and matching all criteria can reach the DB.
+    # But sometimes, we want the Pods to be accessible to clients from other namespaces, in this case, we can use this
+    # # parameter to select these namespaces
+    # #
     # explicitNamespacesSelector:
     #   # Accept from namespaces with all those different rules (only from whitelisted Pods)
     #   matchLabels:
-    #     role: frontend
-    #   matchExpressions:
-    #     - {key: role, operator: In, values: [frontend]}
+    #     app: be
+    # #   matchExpressions:
+    # #     - {key: role, operator: In, values: [frontend]}
 
-    ## Additional NetworkPolicy Ingress "from" rules to set. Note that all rules are OR-ed.
-    ##
+    # ## Additional NetworkPolicy Ingress "from" rules to set. Note that all rules are OR-ed.
+    # ##
     # additionalRules:
     #   - podSelector:
     #       matchLabels:
-    #         role: frontend
-    #   - podSelector:
-    #       matchExpressions:
-    #         - key: role
-    #           operator: In
-    #           values:
-    #             - frontend
+    #         app: be
+    # #   - podSelector:
+    # #       matchExpressions:
+    # #         - key: role
+    # #           operator: In
+    # #           values:
+    # #             - frontend
 
   transport:
     ## Note that all Elasticsearch Pods can talk to themselves using transport port even if enabled.
     enabled: false
     # explicitNamespacesSelector:
+    #   # Accept from namespaces with all those different rules (only from whitelisted Pods)
     #   matchLabels:
-    #     role: frontend
-    #   matchExpressions:
-    #     - {key: role, operator: In, values: [frontend]}
+    #     app: be
+    # #   matchExpressions:
+    # #     - {key: role, operator: In, values: [frontend]}
+
+    # ## Additional NetworkPolicy Ingress "from" rules to set. Note that all rules are OR-ed.
+    # ##
     # additionalRules:
     #   - podSelector:
     #       matchLabels:
-    #         role: frontend
-    #   - podSelector:
-    #       matchExpressions:
-    #         - key: role
-    #           operator: In
-    #           values:
-    #             - frontend
+    #         app: be
+    # #   - podSelector:
+    # #       matchExpressions:
+    # #         - key: role
+    # #           operator: In
+    # #           values:
+    # #             - frontend
 
 tests:
   enabled: true
+
+# Deprecated
+# please use the above podSecurityContext.fsGroup instead
+fsGroup: ""

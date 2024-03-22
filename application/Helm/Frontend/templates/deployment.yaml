@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.deployment.name }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ .Values.pod.name }}
+  replicas: {{ .Values.replicaCount }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.pod.name }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Values.pod.name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          ports:
+          - containerPort: {{ .Values.pod.containerPort }}
+            name: http
+            protocol: {{ .Values.pod.protocol }}
+          env:
+            - name: REACT_APP_API_URL
+              value: https://datalakev2-relayer.sotaicg.com/api/v2
+            - name: REACT_APP_DOMAIN_API_SDK
+              value: datalakev2-api.sotaicg.com
+            - name: REACT_APP_CHUNK_SIZE_MB
+              value: "100"
