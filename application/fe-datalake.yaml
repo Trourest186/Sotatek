@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: application-fe
+  namespace: application
+spec:
+  selector:
+    matchLabels:
+      app: fe
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: fe
+    spec:
+      imagePullSecrets:
+        - name: regcred
+      containers:
+        - name: application-fes
+          image: registry.sotaicg.com/testk8s/fe-platform
+          ports:
+          - containerPort: 80
+            name: http
+            protocol: TCP
+          env:
+            - name: REACT_APP_API_URL
+              value: https://datalakev2-relayer.sotaicg.com/api/v2
+            - name: REACT_APP_DOMAIN_API_SDK
+              value: datalakev2-api.sotaicg.com
+            - name: REACT_APP_CHUNK_SIZE_MB
+              value: "100"

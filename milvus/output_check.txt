@@ -1,0 +1,4342 @@
+---
+# Source: milvus/charts/kafka/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-name-kafka
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: kafka-15.5.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: kafka
+  annotations:
+automountServiceAccountToken: true
+---
+# Source: milvus/charts/minio/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "release-name-minio"
+  namespace: "default"
+  labels:
+    app: minio
+    chart: minio-8.0.17
+    release: "release-name"
+---
+# Source: milvus/charts/pulsar/templates/broker-service-account.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "release-name-pulsar-broker-acct"
+  namespace: default
+  labels:
+    app: pulsar
+    chart: pulsar-2.7.8
+    release: release-name
+    heritage: Helm
+    cluster: release-name-pulsar
+    component: broker
+  annotations:
+---
+# Source: milvus/charts/minio/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: release-name-minio
+  labels:
+    app: minio
+    chart: minio-8.0.17
+    release: release-name
+    heritage: Helm
+type: Opaque
+data:
+  accesskey: "bWluaW9hZG1pbg=="
+  secretkey: "bWluaW9hZG1pbg=="
+---
+# Source: milvus/charts/kafka/charts/zookeeper/templates/scripts-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-zookeeper-scripts
+  namespace: default
+  labels:
+    app.kubernetes.io/name: zookeeper
+    helm.sh/chart: zookeeper-8.1.2
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: zookeeper
+data:
+  init-certs.sh: |-
+    #!/bin/bash
+  setup.sh: |-
+    #!/bin/bash
+
+    # Execute entrypoint as usual after obtaining ZOO_SERVER_ID
+    # check ZOO_SERVER_ID in persistent volume via myid
+    # if not present, set based on POD hostname
+    if [[ -f "/bitnami/zookeeper/data/myid" ]]; then
+        export ZOO_SERVER_ID="$(cat /bitnami/zookeeper/data/myid)"
+    else
+        HOSTNAME="$(hostname -s)"
+        if [[ $HOSTNAME =~ (.*)-([0-9]+)$ ]]; then
+            ORD=${BASH_REMATCH[2]}
+            export ZOO_SERVER_ID="$((ORD + 1 ))"
+        else
+            echo "Failed to get index from hostname $HOST"
+            exit 1
+        fi
+    fi
+    exec /entrypoint.sh /run.sh
+---
+# Source: milvus/charts/kafka/templates/scripts-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-kafka-scripts
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: kafka-15.5.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+data:
+  setup.sh: |-
+    #!/bin/bash
+
+    ID="${MY_POD_NAME#"release-name-kafka-"}"
+    if [[ -f "/bitnami/kafka/data/meta.properties" ]]; then
+        export KAFKA_CFG_BROKER_ID="$(grep "broker.id" /bitnami/kafka/data/meta.properties | awk -F '=' '{print $2}')"
+    else
+        export KAFKA_CFG_BROKER_ID="$((ID + 0))"
+    fi
+
+    exec /entrypoint.sh /run.sh
+---
+# Source: milvus/charts/minio/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-minio
+  labels:
+    app: minio
+    chart: minio-8.0.17
+    release: release-name
+    heritage: Helm
+data:
+  initialize: |-
+    #!/bin/sh
+    set -e ; # Have script exit in the event of a failed command.
+    MC_CONFIG_DIR="/etc/minio/mc/"
+    MC="/usr/bin/mc --insecure --config-dir ${MC_CONFIG_DIR}"
+    
+    # connectToMinio
+    # Use a check-sleep-check loop to wait for Minio service to be available
+    connectToMinio() {
+      SCHEME=$1
+      ATTEMPTS=0 ; LIMIT=29 ; # Allow 30 attempts
+      set -e ; # fail if we can't read the keys.
+      ACCESS=$(cat /config/accesskey) ; SECRET=$(cat /config/secretkey) ;
+      set +e ; # The connections to minio are allowed to fail.
+      echo "Connecting to Minio server: $SCHEME://$MINIO_ENDPOINT:$MINIO_PORT" ;
+      MC_COMMAND="${MC} config host add myminio $SCHEME://$MINIO_ENDPOINT:$MINIO_PORT $ACCESS $SECRET" ;
+      $MC_COMMAND ;
+      STATUS=$? ;
+      until [ $STATUS = 0 ]
+      do
+        ATTEMPTS=`expr $ATTEMPTS + 1` ;
+        echo \"Failed attempts: $ATTEMPTS\" ;
+        if [ $ATTEMPTS -gt $LIMIT ]; then
+          exit 1 ;
+        fi ;
+        sleep 2 ; # 1 second intervals between attempts
+        $MC_COMMAND ;
+        STATUS=$? ;
+      done ;
+      set -e ; # reset `e` as active
+      return 0
+    }
+    
+    # checkBucketExists ($bucket)
+    # Check if the bucket exists, by using the exit code of `mc ls`
+    checkBucketExists() {
+      BUCKET=$1
+      CMD=$(${MC} ls myminio/$BUCKET > /dev/null 2>&1)
+      return $?
+    }
+    
+    # createBucket ($bucket, $policy, $purge)
+    # Ensure bucket exists, purging if asked to
+    createBucket() {
+      BUCKET=$1
+      POLICY=$2
+      PURGE=$3
+      VERSIONING=$4
+    
+      # Purge the bucket, if set & exists
+      # Since PURGE is user input, check explicitly for `true`
+      if [ $PURGE = true ]; then
+        if checkBucketExists $BUCKET ; then
+          echo "Purging bucket '$BUCKET'."
+          set +e ; # don't exit if this fails
+          ${MC} rm -r --force myminio/$BUCKET
+          set -e ; # reset `e` as active
+        else
+          echo "Bucket '$BUCKET' does not exist, skipping purge."
+        fi
+      fi
+    
+      # Create the bucket if it does not exist
+      if ! checkBucketExists $BUCKET ; then
+        echo "Creating bucket '$BUCKET'"
+        ${MC} mb myminio/$BUCKET
+      else
+        echo "Bucket '$BUCKET' already exists."
+      fi
+    
+    
+      # set versioning for bucket
+      if [ ! -z $VERSIONING ] ; then
+        if [ $VERSIONING = true ] ; then
+            echo "Enabling versioning for '$BUCKET'"
+            ${MC} version enable myminio/$BUCKET
+        elif [ $VERSIONING = false ] ; then
+            echo "Suspending versioning for '$BUCKET'"
+            ${MC} version suspend myminio/$BUCKET
+        fi
+      else
+          echo "Bucket '$BUCKET' versioning unchanged."
+      fi
+    
+      # At this point, the bucket should exist, skip checking for existence
+      # Set policy on the bucket
+      echo "Setting policy of bucket '$BUCKET' to '$POLICY'."
+      ${MC} policy set $POLICY myminio/$BUCKET
+    }
+    
+    # Try connecting to Minio instance
+    scheme=http
+    connectToMinio $scheme
+---
+# Source: milvus/charts/pulsar/templates/bookkeeper-configmap.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "release-name-pulsar-bookie"
+  namespace: default
+  labels:
+    app: pulsar
+    chart: pulsar-2.7.8
+    release: release-name
+    heritage: Helm
+    cluster: release-name-pulsar
+    component: bookie
+data:
+  # common config
+  zkServers: "release-name-pulsar-zookeeper:2181"
+  zkLedgersRootPath: "/ledgers"
+  # enable bookkeeper http server
+  httpServerEnabled: "true"
+  httpServerPort: "8000"
+  # config the stats provider
+  statsProviderClass: org.apache.bookkeeper.stats.prometheus.PrometheusMetricsProvider
+  # use hostname as the bookie id
+  useHostNameAsBookieID: "true"
+  # Do not retain journal files as it increase the disk utilization
+  journalMaxBackups: "0"
+  journalDirectories: "/pulsar/data/bookkeeper/journal"
+  PULSAR_PREFIX_journalDirectories: "/pulsar/data/bookkeeper/journal"
+  ledgerDirectories: "/pulsar/data/bookkeeper/ledgers"
+  # TLS config
+  
+  PULSAR_GC: |
+    -Dio.netty.leakDetectionLevel=disabled -Dio.netty.recycler.linkCapacity=1024 -XX:+UseG1GC -XX:MaxGCPauseMillis=10 -XX:+ParallelRefProcEnabled -XX:+UnlockExperimentalVMOptions -XX:+DoEscapeAnalysis -XX:ParallelGCThreads=32 -XX:ConcGCThreads=32 -XX:G1NewSizePercent=50 -XX:+DisableExplicitGC -XX:-ResizePLAB -XX:+ExitOnOutOfMemoryError -XX:+PerfDisableSharedMem -XX:+PrintGCDetails
+  PULSAR_MEM: |
+    -Xms256m -Xmx256m -XX:MaxDirectMemorySize=256m
+  dbStorage_readAheadCacheMaxSizeMb: "32"
+  dbStorage_rocksDB_blockCacheSize: "8388608"
+  dbStorage_rocksDB_writeBufferSizeMB: "8"
+  dbStorage_writeCacheMaxSizeMb: "32"
+  nettyMaxFrameSizeBytes: "104867840"
+---
+# Source: milvus/charts/pulsar/templates/broker-configmap.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "release-name-pulsar-broker"
+  namespace: default
+  labels:
+    app: pulsar
+    chart: pulsar-2.7.8
+    release: release-name
+    heritage: Helm
+    cluster: release-name-pulsar
+    component: broker
+data:
+  # Metadata settings
+  zookeeperServers: "release-name-pulsar-zookeeper:2181"
+  configurationStoreServers: "release-name-pulsar-zookeeper:2181"
+
+  # Broker settings
+  clusterName: release-name-pulsar
+  exposeTopicLevelMetricsInPrometheus: "true"
+  numHttpServerThreads: "8"
+  zooKeeperSessionTimeoutMillis: "30000"
+  statusFilePath: "/pulsar/status"
+
+  # Function Worker Settings
+  # function worker configuration
+  functionsWorkerEnabled: "false"
+
+  # prometheus needs to access /metrics endpoint
+  webServicePort: "8080"
+  brokerServicePort: "6650"
+
+  # Authentication Settings
+  PULSAR_GC: |
+    -Dio.netty.leakDetectionLevel=disabled -Dio.netty.recycler.linkCapacity=1024 -XX:+ParallelRefProcEnabled -XX:+UnlockExperimentalVMOptions -XX:+DoEscapeAnalysis -XX:ParallelGCThreads=32 -XX:ConcGCThreads=32 -XX:G1NewSizePercent=50 -XX:+DisableExplicitGC -XX:-ResizePLAB -XX:+ExitOnOutOfMemoryError
+  PULSAR_MEM: |
+    -Xms256m -Xmx256m -XX:MaxDirectMemorySize=256m
+  backlogQuotaDefaultLimitGB: "8"
+  backlogQuotaDefaultRetentionPolicy: producer_exception
+  defaultRetentionSizeInMB: "-1"
+  defaultRetentionTimeInMinutes: "10080"
+  managedLedgerDefaultAckQuorum: "2"
+  managedLedgerDefaultEnsembleSize: "2"
+  managedLedgerDefaultWriteQuorum: "2"
+  maxMessageSize: "104857600"
+  subscriptionExpirationTimeMinutes: "3"
+  ttlDurationDefaultInSeconds: "259200"
+---
+# Source: milvus/charts/pulsar/templates/proxy-configmap.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "release-name-pulsar-proxy"
+  namespace: default
+  labels:
+    app: pulsar
+    chart: pulsar-2.7.8
+    release: release-name
+    heritage: Helm
+    cluster: release-name-pulsar
+    component: proxy
+data:
+  clusterName: release-name-pulsar
+  httpNumThreads: "8"
+  statusFilePath: "/pulsar/status"
+  # prometheus needs to access /metrics endpoint
+  webServicePort: "80"
+  servicePort: "6650"
+  brokerServiceURL: pulsar://release-name-pulsar-broker:6650
+  brokerWebServiceURL: http://release-name-pulsar-broker:8080
+
+  # Authentication Settings
+  PULSAR_GC: |
+    -XX:MaxDirectMemorySize=2048m
+  PULSAR_MEM: |
+    -Xms2048m -Xmx2048m
+  httpNumThreads: "100"
+---
+# Source: milvus/charts/pulsar/templates/zookeeper-configmap.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+# deploy zookeeper only when `components.zookeeper` is true
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "release-name-pulsar-zookeeper"
+  namespace: default
+  labels:
+    app: pulsar
+    chart: pulsar-2.7.8
+    release: release-name
+    heritage: Helm
+    cluster: release-name-pulsar
+    component: zookeeper
+data:
+  dataDir: /pulsar/data/zookeeper
+  PULSAR_PREFIX_serverCnxnFactory: org.apache.zookeeper.server.NIOServerCnxnFactory
+  serverCnxnFactory: org.apache.zookeeper.server.NIOServerCnxnFactory
+  PULSAR_GC: |
+    -Dcom.sun.management.jmxremote -Djute.maxbuffer=10485760 -XX:+ParallelRefProcEnabled -XX:+UnlockExperimentalVMOptions -XX:+DoEscapeAnalysis -XX:+DisableExplicitGC -XX:+PerfDisableSharedMem -Dzookeeper.forceSync=no
+  PULSAR_MEM: |
+    -Xms256m -Xmx256m
+---
+# Source: milvus/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: release-name-milvus
+data:
+  default.yaml: |+
+    # Copyright (C) 2019-2021 Zilliz. All rights reserved.
+    #
+    # Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+    # with the License. You may obtain a copy of the License at
+    #
+    # http://www.apache.org/licenses/LICENSE-2.0
+    #
+    # Unless required by applicable law or agreed to in writing, software distributed under the License
+    # is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+    # or implied. See the License for the specific language governing permissions and limitations under the License.
+    
+    etcd:
+      endpoints:
+        - release-name-etcd:2379
+    
+    metastore:
+      type: etcd
+    
+    minio:
+      address: release-name-minio
+      port: 9000
+      accessKeyID: minioadmin
+      secretAccessKey: minioadmin
+      useSSL: false
+      bucketName: milvus-bucket
+      rootPath: file
+      useIAM: false
+      iamEndpoint: 
+      region: 
+      useVirtualHost: false
+    
+    mq:
+      type: pulsar
+    
+    messageQueue: pulsar
+    
+    pulsar:
+      address: release-name-pulsar-proxy
+      port: 6650
+      maxMessageSize: 5242880
+    
+    mq:
+      type: kafka
+    
+    messageQueue: kafka
+    
+    kafka:
+      brokerList: localhost:9092
+      securityProtocol: SASL_SSL
+      saslMechanisms: PLAIN
+      saslUsername: admin
+      saslPassword: 123456a@
+    
+    rootCoord:
+      address: release-name-milvus-rootcoord
+      port: 53100
+      enableActiveStandby: false  # Enable rootcoord active-standby
+    
+    proxy:
+      port: 19530
+      internalPort: 19529
+    
+    queryCoord:
+      address: release-name-milvus-querycoord
+      port: 19531
+    
+      enableActiveStandby: false  # Enable querycoord active-standby
+    
+    queryNode:
+      port: 21123
+      enableDisk: true # Enable querynode load disk index, and search on disk index
+    
+    indexCoord:
+      address: release-name-milvus-indexcoord
+      port: 31000
+      enableActiveStandby: false  # Enable indexcoord active-standby
+    
+    indexNode:
+      port: 21121
+      enableDisk: true # Enable index node build disk vector index
+    
+    dataCoord:
+      address: release-name-milvus-datacoord
+      port: 13333
+      enableActiveStandby: false  # Enable datacoord active-standby
+    
+    dataNode:
+      port: 21124
+    
+    log:
+      level: info
+      file:
+        rootPath: ""
+        maxSize: 300
+        maxAge: 10
+        maxBackups: 20
+      format: text
+  user.yaml: |-
+    #    For example enable rest http for milvus proxy
+    #    proxy:
+    #      http:
+    #        enabled: true
+    #      maxUserNum: 100
+    #      maxRoleNum: 10
+    ##  Enable tlsMode and set the tls cert and key
+    #  tls:
+    #    serverPemPath: /etc/milvus/certs/tls.crt
+    #    serverKeyPath: /etc/milvus/certs/tls.key
+    #   common:
+    #     security:
+    #       tlsMode: 1
+---
+# Source: milvus/charts/pulsar/templates/broker-cluster-role-binding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: "release-name-pulsar-broker-role"
+  labels:
+    app: pulsar
+    chart: pulsar-2.7.8
+    release: release-name
+    heritage: Helm
+    cluster: release-name-pulsar
+rules:
+- apiGroups: [""]
+  resources:
+  - configmaps
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["", "extensions", "apps"]
+  resources:
+    - pods
+    - services
+    - deployments
+    - secrets
+    - statefulsets
+  verbs:
+    - list
+    - watch
+    - get
+    - update
+    - create
+    - delete
+    - patch
+---
+# Source: milvus/charts/pulsar/templates/broker-cluster-role-binding.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+## TODO create our own cluster role with less privledges than admin
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: "release-name-pulsar-broker-rolebinding"
+  labels:
+    app: pulsar
+    chart: pulsar-2.7.8
+    release: release-name
+    heritage: Helm
+    cluster: release-name-pulsar
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: "release-name-pulsar-broker-role"
+subjects:
+- kind: ServiceAccount
+  name: "release-name-pulsar-broker-acct"
+  namespace: default
+---
+# Source: milvus/charts/etcd/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-etcd-headless
+  namespace: default
+  labels:
+    app.kubernetes.io/name: etcd
+    helm.sh/chart: etcd-6.3.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: "client"
+      port: 2379
+      targetPort: client
+    - name: "peer"
+      port: 2380
+      targetPort: peer
+  selector:
+    app.kubernetes.io/name: etcd
+    app.kubernetes.io/instance: release-name
+---
+# Source: milvus/charts/etcd/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-etcd
+  namespace: default
+  labels:
+    app.kubernetes.io/name: etcd
+    helm.sh/chart: etcd-6.3.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+spec:
+  type: ClusterIP
+  ports:
+    - name: "client"
+      port: 2379
+      targetPort: client
+      nodePort: null
+    - name: "peer"
+      port: 2380
+      targetPort: peer
+      nodePort: null
+  selector:
+    app.kubernetes.io/name: etcd
+    app.kubernetes.io/instance: release-name
+---
+# Source: milvus/charts/kafka/charts/zookeeper/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-zookeeper-headless
+  namespace: default
+  labels:
+    app.kubernetes.io/name: zookeeper
+    helm.sh/chart: zookeeper-8.1.2
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: zookeeper
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: tcp-client
+      port: 2181
+      targetPort: client
+    - name: tcp-follower
+      port: 2888
+      targetPort: follower
+    - name: tcp-election
+      port: 3888
+      targetPort: election
+  selector:
+    app.kubernetes.io/name: zookeeper
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: zookeeper
+---
+# Source: milvus/charts/kafka/charts/zookeeper/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-zookeeper
+  namespace: default
+  labels:
+    app.kubernetes.io/name: zookeeper
+    helm.sh/chart: zookeeper-8.1.2
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: zookeeper
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  ports:
+    - name: tcp-client
+      port: 2181
+      targetPort: client
+      nodePort: null
+    - name: tcp-follower
+      port: 2888
+      targetPort: follower
+    - name: tcp-election
+      port: 3888
+      targetPort: election
+  selector:
+    app.kubernetes.io/name: zookeeper
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: zookeeper
+---
+# Source: milvus/charts/kafka/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-kafka-headless
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: kafka-15.5.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: kafka
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: tcp-client
+      port: 9092
+      protocol: TCP
+      targetPort: kafka-client
+    - name: tcp-internal
+      port: 9093
+      protocol: TCP
+      targetPort: kafka-internal
+  selector:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: kafka
+---
+# Source: milvus/charts/kafka/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-kafka
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: kafka-15.5.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: kafka
+spec:
+  type: NodePort
+  sessionAffinity: None
+  externalTrafficPolicy: "Cluster"
+  ports:
+    - name: tcp-client
+      port: 9092
+      protocol: TCP
+      targetPort: kafka-client
+  selector:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/component: kafka
+---
+# Source: milvus/charts/minio/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-minio
+  labels:
+    app: minio
+    chart: minio-8.0.17
+    release: release-name
+    heritage: Helm
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 9000
+      protocol: TCP
+      nodePort: 32111
+  selector:
+    app: minio
+    release: release-name
+---
+# Source: milvus/charts/minio/templates/statefulset.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-minio-svc
+  labels:
+    app: minio
+    chart: minio-8.0.17
+    release: "release-name"
+    heritage: "Helm"
+spec:
+  publishNotReadyAddresses: true
+  clusterIP: None
+  ports:
+    - name: http
+      port: 9000
+      protocol: TCP
+  selector:
+    app: minio
+    release: release-name
+---
+# Source: milvus/charts/pulsar/templates/bookkeeper-service.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: "release-name-pulsar-bookie"
+  namespace: default
+  labels:
+    app: pulsar
+    chart: pulsar-2.7.8
+    release: release-name
+    heritage: Helm
+    cluster: release-name-pulsar
+    component: bookie
+spec:
+  ports:
+  - name: "bookie"
+    port: 3181
+  - name: http
+    port: 8000
+  clusterIP: None
+  selector:
+    app: pulsar
+    release: release-name
+    component: bookie
+  publishNotReadyAddresses: true
+---
+# Source: milvus/charts/pulsar/templates/broker-service.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: "release-name-pulsar-broker"
+  namespace: default
+  labels:
+    app: pulsar
+    chart: pulsar-2.7.8
+    release: release-name
+    heritage: Helm
+    cluster: release-name-pulsar
+    component: broker
+  annotations:
+    {}
+spec:
+  ports:
+  # prometheus needs to access /metrics endpoint
+  - name: http
+    port: 8080
+  - name: "pulsar"
+    port: 6650
+  clusterIP: None
+  selector:
+    app: pulsar
+    release: release-name
+    component: broker
+---
+# Source: milvus/charts/pulsar/templates/proxy-service.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: "release-name-pulsar-proxy"
+  namespace: default
+  labels:
+    app: pulsar
+    chart: pulsar-2.7.8
+    release: release-name
+    heritage: Helm
+    cluster: release-name-pulsar
+    component: proxy
+  annotations:
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+    - name: "pulsar"
+      port: 6650
+      protocol: TCP
+  selector:
+    app: pulsar
+    release: release-name
+    component: proxy
+---
+# Source: milvus/charts/pulsar/templates/zookeeper-service.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+# deploy zookeeper only when `components.zookeeper` is true
+apiVersion: v1
+kind: Service
+metadata:
+  name: "release-name-pulsar-zookeeper"
+  namespace: default
+  labels:
+    app: pulsar
+    chart: pulsar-2.7.8
+    release: release-name
+    heritage: Helm
+    cluster: release-name-pulsar
+    component: zookeeper
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  ports:
+    # prometheus needs to access /metrics endpoint
+    - name: http
+      port: 8000
+    - name: "follower"
+      port: 2888
+    - name: "leader-election"
+      port: 3888
+    - name: "client"
+      port: 2181
+  clusterIP: None
+  selector:
+    app: pulsar
+    release: release-name
+    component: zookeeper
+---
+# Source: milvus/templates/datacoord-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-milvus-datacoord
+  labels:
+    helm.sh/chart: milvus-4.1.24
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.3.11"
+    app.kubernetes.io/managed-by: Helm
+    component: "datacoord"
+spec:
+  type: ClusterIP
+  ports:
+    - name: datacoord
+      port: 13333
+      protocol: TCP
+      targetPort: datacoord
+    - name: metrics
+      protocol: TCP
+      port: 9091
+      targetPort: metrics
+  selector:
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    component: "datacoord"
+---
+# Source: milvus/templates/datanode-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-milvus-datanode
+  labels:
+    helm.sh/chart: milvus-4.1.24
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.3.11"
+    app.kubernetes.io/managed-by: Helm
+    component: "datanode"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: metrics
+      protocol: TCP
+      port: 9091
+      targetPort: metrics
+  selector:
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    component: "datanode"
+---
+# Source: milvus/templates/indexcoord-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-milvus-indexcoord
+  labels:
+    helm.sh/chart: milvus-4.1.24
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.3.11"
+    app.kubernetes.io/managed-by: Helm
+    component: "indexcoord"
+spec:
+  type: ClusterIP
+  ports:
+    - name: indexcoord
+      port: 31000
+      protocol: TCP
+      targetPort: indexcoord
+    - name: metrics
+      protocol: TCP
+      port: 9091
+      targetPort: metrics
+  selector:
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    component: "indexcoord"
+---
+# Source: milvus/templates/indexnode-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-milvus-indexnode
+  labels:
+    helm.sh/chart: milvus-4.1.24
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.3.11"
+    app.kubernetes.io/managed-by: Helm
+    component: "indexnode"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: metrics
+      protocol: TCP
+      port: 9091
+      targetPort: metrics
+  selector:
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    component: "indexnode"
+---
+# Source: milvus/templates/querycoord-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-milvus-querycoord
+  labels:
+    helm.sh/chart: milvus-4.1.24
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.3.11"
+    app.kubernetes.io/managed-by: Helm
+    component: "querycoord"
+spec:
+  type: ClusterIP
+  ports:
+    - name: querycoord
+      port: 19531
+      protocol: TCP
+      targetPort: querycoord
+    - name: metrics
+      protocol: TCP
+      port: 9091
+      targetPort: metrics
+  selector:
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    component: "querycoord"
+---
+# Source: milvus/templates/querynode-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-milvus-querynode
+  labels:
+    helm.sh/chart: milvus-4.1.24
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.3.11"
+    app.kubernetes.io/managed-by: Helm
+    component: "querynode"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: metrics
+      protocol: TCP
+      port: 9091
+      targetPort: metrics
+  selector:
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    component: "querynode"
+---
+# Source: milvus/templates/rootcoord-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-milvus-rootcoord
+  labels:
+    helm.sh/chart: milvus-4.1.24
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.3.11"
+    app.kubernetes.io/managed-by: Helm
+    component: "rootcoord"
+spec:
+  type: ClusterIP
+  ports:
+    - name: rootcoord
+      port: 53100
+      protocol: TCP
+      targetPort: rootcoord
+    - name: metrics
+      protocol: TCP
+      port: 9091
+      targetPort: metrics
+  selector:
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    component: "rootcoord"
+---
+# Source: milvus/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-name-milvus
+  labels:
+    helm.sh/chart: milvus-4.1.24
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.3.11"
+    app.kubernetes.io/managed-by: Helm
+    component: "proxy"
+spec:
+  type: NodePort
+  ports:
+    - name: milvus
+      port: 19530
+      protocol: TCP
+      targetPort: milvus
+      nodePort: 30999
+    - name: metrics
+      protocol: TCP
+      port: 9091
+      targetPort: metrics
+  selector:
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    component: "proxy"
+---
+# Source: milvus/templates/datacoord-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-milvus-datacoord
+  labels:
+    helm.sh/chart: milvus-4.1.24
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.3.11"
+    app.kubernetes.io/managed-by: Helm
+    component: "datacoord"
+    
+  annotations:
+    
+
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: milvus
+      app.kubernetes.io/instance: release-name
+      component: "datacoord"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: milvus
+        app.kubernetes.io/instance: release-name
+        component: "datacoord"
+        
+      annotations:
+        checksum/config: 98e4f4200bd49fb9e66d81935e352fd3012b0a21fb2e398e301e02158b345925
+        
+    spec:
+      serviceAccountName: default
+      initContainers:
+      - name: config
+        command:
+        - /cp
+        - /run-helm.sh,/merge
+        - /milvus/tools/run-helm.sh,/milvus/tools/merge
+        image: "milvusdb/milvus-config-tool:v0.1.2"
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - mountPath: /milvus/tools
+          name: tools
+      containers:
+      - name: datacoord
+        image: "milvusdb/milvus:v2.3.11"
+        imagePullPolicy: IfNotPresent
+        args: [ "/milvus/tools/run-helm.sh", "milvus", "run", "datacoord" ]
+        env:
+        ports:
+          - name: datacoord
+            containerPort: 13333
+            protocol: TCP
+          - name: metrics
+            containerPort: 9091
+            protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          initialDelaySeconds: 90
+          periodSeconds: 30
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          initialDelaySeconds: 90
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+        resources:
+          {}
+        volumeMounts:
+        - name: milvus-config
+          mountPath: /milvus/configs/default.yaml
+          subPath: default.yaml
+          readOnly: true
+        - name: milvus-config
+          mountPath: /milvus/configs/user.yaml
+          subPath: user.yaml
+          readOnly: true
+        - mountPath: /milvus/tools
+          name: tools
+
+      volumes:
+      - name: milvus-config
+        configMap:
+          name: release-name-milvus
+      - name: tools
+        emptyDir: {}
+---
+# Source: milvus/templates/datanode-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-milvus-datanode
+  labels:
+    helm.sh/chart: milvus-4.1.24
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.3.11"
+    app.kubernetes.io/managed-by: Helm
+    component: "datanode"
+
+    
+  annotations:
+    
+
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: milvus
+      app.kubernetes.io/instance: release-name
+      component: "datanode"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: milvus
+        app.kubernetes.io/instance: release-name
+        component: "datanode"
+        
+      annotations:
+        checksum/config: 98e4f4200bd49fb9e66d81935e352fd3012b0a21fb2e398e301e02158b345925
+        
+    spec:
+      serviceAccountName: default
+      initContainers:
+      - name: config
+        command:
+        - /cp
+        - /run-helm.sh,/merge
+        - /milvus/tools/run-helm.sh,/milvus/tools/merge
+        image: "milvusdb/milvus-config-tool:v0.1.2"
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - mountPath: /milvus/tools
+          name: tools
+      containers:
+      - name: datanode
+        image: "milvusdb/milvus:v2.3.11"
+        imagePullPolicy: IfNotPresent
+        args: [ "/milvus/tools/run-helm.sh", "milvus", "run", "datanode" ]
+        env:
+        ports:
+          - name: datanode
+            containerPort: 21124
+            protocol: TCP
+          - name: metrics
+            containerPort: 9091
+            protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          initialDelaySeconds: 90
+          periodSeconds: 30
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          initialDelaySeconds: 90
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+        resources:
+          {}
+        volumeMounts:
+        - name: milvus-config
+          mountPath: /milvus/configs/default.yaml
+          subPath: default.yaml
+          readOnly: true
+        - name: milvus-config
+          mountPath: /milvus/configs/user.yaml
+          subPath: user.yaml
+          readOnly: true
+        - mountPath: /milvus/tools
+          name: tools
+      volumes:
+      - name: milvus-config
+        configMap:
+          name: release-name-milvus
+      - name: tools
+        emptyDir: {}
+---
+# Source: milvus/templates/indexcoord-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-milvus-indexcoord
+  labels:
+    helm.sh/chart: milvus-4.1.24
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.3.11"
+    app.kubernetes.io/managed-by: Helm
+    component: "indexcoord"
+    
+  annotations:
+    
+
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: milvus
+      app.kubernetes.io/instance: release-name
+      component: "indexcoord"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: milvus
+        app.kubernetes.io/instance: release-name
+        component: "indexcoord"
+        
+      annotations:
+        checksum/config: 98e4f4200bd49fb9e66d81935e352fd3012b0a21fb2e398e301e02158b345925
+        
+    spec:
+      serviceAccountName: default
+      initContainers:
+      - name: config
+        command:
+        - /cp
+        - /run-helm.sh,/merge
+        - /milvus/tools/run-helm.sh,/milvus/tools/merge
+        image: "milvusdb/milvus-config-tool:v0.1.2"
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - mountPath: /milvus/tools
+          name: tools
+      containers:
+      - name: indexcoord
+        image: "milvusdb/milvus:v2.3.11"
+        imagePullPolicy: IfNotPresent
+        args: [ "/milvus/tools/run-helm.sh", "milvus", "run", "indexcoord" ]
+        env:
+        ports:
+          - name: indexcoord
+            containerPort: 31000
+            protocol: TCP
+          - name: metrics
+            containerPort: 9091
+            protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          initialDelaySeconds: 90
+          periodSeconds: 30
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          initialDelaySeconds: 90
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+        resources:
+          {}
+        volumeMounts:
+        - name: milvus-config
+          mountPath: /milvus/configs/default.yaml
+          subPath: default.yaml
+          readOnly: true
+        - name: milvus-config
+          mountPath: /milvus/configs/user.yaml
+          subPath: user.yaml
+          readOnly: true
+        - mountPath: /milvus/tools
+          name: tools
+
+      volumes:
+      - name: milvus-config
+        configMap:
+          name: release-name-milvus
+      - name: tools
+        emptyDir: {}
+---
+# Source: milvus/templates/indexnode-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-milvus-indexnode
+  labels:
+    helm.sh/chart: milvus-4.1.24
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.3.11"
+    app.kubernetes.io/managed-by: Helm
+    component: "indexnode"
+    
+  annotations:
+    
+
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: milvus
+      app.kubernetes.io/instance: release-name
+      component: "indexnode"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: milvus
+        app.kubernetes.io/instance: release-name
+        component: "indexnode"
+        
+      annotations:
+        checksum/config: 98e4f4200bd49fb9e66d81935e352fd3012b0a21fb2e398e301e02158b345925
+        
+    spec:
+      serviceAccountName: default
+      initContainers:
+      - name: config
+        command:
+        - /cp
+        - /run-helm.sh,/merge
+        - /milvus/tools/run-helm.sh,/milvus/tools/merge
+        image: "milvusdb/milvus-config-tool:v0.1.2"
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - mountPath: /milvus/tools
+          name: tools
+      containers:
+      - name: indexnode
+        image: "milvusdb/milvus:v2.3.11"
+        imagePullPolicy: IfNotPresent
+        args: [ "/milvus/tools/run-helm.sh", "milvus", "run", "indexnode" ]
+        env:
+        ports:
+          - name: indexnode
+            containerPort: 21121
+            protocol: TCP
+          - name: metrics
+            containerPort: 9091
+            protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          initialDelaySeconds: 90
+          periodSeconds: 30
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          initialDelaySeconds: 90
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+        resources:
+          {}
+        volumeMounts:
+        - name: milvus-config
+          mountPath: /milvus/configs/default.yaml
+          subPath: default.yaml
+          readOnly: true
+        - name: milvus-config
+          mountPath: /milvus/configs/user.yaml
+          subPath: user.yaml
+          readOnly: true
+        - mountPath: /milvus/tools
+          name: tools
+        - mountPath: /var/lib/milvus/data
+          name: disk
+
+      volumes:
+      - name: milvus-config
+        configMap:
+          name: release-name-milvus
+      - name: tools
+        emptyDir: {}
+      - name: disk
+        emptyDir: {}
+---
+# Source: milvus/templates/proxy-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-milvus-proxy
+  labels:
+    helm.sh/chart: milvus-4.1.24
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.3.11"
+    app.kubernetes.io/managed-by: Helm
+    component: "proxy"
+
+    
+  annotations:
+    
+
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: milvus
+      app.kubernetes.io/instance: release-name
+      component: "proxy"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: milvus
+        app.kubernetes.io/instance: release-name
+        component: "proxy"
+        
+      annotations:
+        checksum/config: 98e4f4200bd49fb9e66d81935e352fd3012b0a21fb2e398e301e02158b345925
+        
+    spec:
+      serviceAccountName: default
+      initContainers:
+      - name: config
+        command:
+        - /cp
+        - /run-helm.sh,/merge
+        - /milvus/tools/run-helm.sh,/milvus/tools/merge
+        image: "milvusdb/milvus-config-tool:v0.1.2"
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - mountPath: /milvus/tools
+          name: tools
+      containers:
+      - name: proxy
+        image: "milvusdb/milvus:v2.3.11"
+        imagePullPolicy: IfNotPresent
+        args: [ "/milvus/tools/run-helm.sh", "milvus", "run", "proxy" ]
+        env:
+        ports:
+          - name: milvus
+            containerPort: 19530
+            protocol: TCP
+          - name: metrics
+            containerPort: 9091
+            protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          initialDelaySeconds: 90
+          periodSeconds: 30
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          initialDelaySeconds: 90
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+        resources:
+          {}
+        volumeMounts:
+        - name: milvus-config
+          mountPath: /milvus/configs/default.yaml
+          subPath: default.yaml
+          readOnly: true
+        - name: milvus-config
+          mountPath: /milvus/configs/user.yaml
+          subPath: user.yaml
+          readOnly: true
+        - mountPath: /milvus/tools
+          name: tools
+
+      volumes:
+      - name: milvus-config
+        configMap:
+          name: release-name-milvus
+      - name: tools
+        emptyDir: {}
+---
+# Source: milvus/templates/querycoord-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-milvus-querycoord
+  labels:
+    helm.sh/chart: milvus-4.1.24
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.3.11"
+    app.kubernetes.io/managed-by: Helm
+    component: "querycoord"
+    
+  annotations:
+    
+
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: milvus
+      app.kubernetes.io/instance: release-name
+      component: "querycoord"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: milvus
+        app.kubernetes.io/instance: release-name
+        
+        component: "querycoord"
+      annotations:
+        checksum/config: 98e4f4200bd49fb9e66d81935e352fd3012b0a21fb2e398e301e02158b345925
+        
+    spec:
+      serviceAccountName: default
+      initContainers:
+      - name: config
+        command:
+        - /cp
+        - /run-helm.sh,/merge
+        - /milvus/tools/run-helm.sh,/milvus/tools/merge
+        image: "milvusdb/milvus-config-tool:v0.1.2"
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - mountPath: /milvus/tools
+          name: tools
+      containers:
+      - name: querycoord
+        image: "milvusdb/milvus:v2.3.11"
+        imagePullPolicy: IfNotPresent
+        args: [ "/milvus/tools/run-helm.sh", "milvus", "run", "querycoord" ]
+        env:
+        ports:
+          - name: querycoord
+            containerPort: 19531
+            protocol: TCP
+          - name: metrics
+            containerPort: 9091
+            protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          initialDelaySeconds: 90
+          periodSeconds: 30
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          initialDelaySeconds: 90
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+        resources:
+          {}
+        volumeMounts:
+        - name: milvus-config
+          mountPath: /milvus/configs/default.yaml
+          subPath: default.yaml
+          readOnly: true
+        - name: milvus-config
+          mountPath: /milvus/configs/user.yaml
+          subPath: user.yaml
+          readOnly: true
+        - mountPath: /milvus/tools
+          name: tools
+
+      volumes:
+      - name: milvus-config
+        configMap:
+          name: release-name-milvus
+      - name: tools
+        emptyDir: {}
+---
+# Source: milvus/templates/querynode-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-milvus-querynode
+  labels:
+    helm.sh/chart: milvus-4.1.24
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.3.11"
+    app.kubernetes.io/managed-by: Helm
+    component: "querynode"
+    
+  annotations:
+    
+
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: milvus
+      app.kubernetes.io/instance: release-name
+      component: "querynode"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: milvus
+        app.kubernetes.io/instance: release-name
+        component: "querynode"
+        
+      annotations:
+        checksum/config: 98e4f4200bd49fb9e66d81935e352fd3012b0a21fb2e398e301e02158b345925
+        
+    spec:
+      serviceAccountName: default
+      initContainers:
+      - name: config
+        command:
+        - /cp
+        - /run-helm.sh,/merge
+        - /milvus/tools/run-helm.sh,/milvus/tools/merge
+        image: "milvusdb/milvus-config-tool:v0.1.2"
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - mountPath: /milvus/tools
+          name: tools
+      containers:
+      - name: querynode
+        image: "milvusdb/milvus:v2.3.11"
+        imagePullPolicy: IfNotPresent
+        args: [ "/milvus/tools/run-helm.sh", "milvus", "run", "querynode" ]
+        env:
+        ports:
+          - name: querynode
+            containerPort: 21123
+            protocol: TCP
+          - name: metrics
+            containerPort: 9091
+            protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          initialDelaySeconds: 90
+          periodSeconds: 30
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          initialDelaySeconds: 90
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+        resources:
+          {}
+        volumeMounts:
+        - name: milvus-config
+          mountPath: /milvus/configs/default.yaml
+          subPath: default.yaml
+          readOnly: true
+        - name: milvus-config
+          mountPath: /milvus/configs/user.yaml
+          subPath: user.yaml
+          readOnly: true
+        - mountPath: /milvus/tools
+          name: tools
+        - mountPath: /var/lib/milvus/data
+          name: disk
+
+      volumes:
+      - name: milvus-config
+        configMap:
+          name: release-name-milvus
+      - name: tools
+        emptyDir: {}
+      - name: disk
+        emptyDir: {}
+---
+# Source: milvus/templates/rootcoord-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-name-milvus-rootcoord
+  labels:
+    helm.sh/chart: milvus-4.1.24
+    app.kubernetes.io/name: milvus
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "2.3.11"
+    app.kubernetes.io/managed-by: Helm
+    component: "rootcoord"
+    
+  annotations:
+    
+
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: milvus
+      app.kubernetes.io/instance: release-name
+      component: "rootcoord"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: milvus
+        app.kubernetes.io/instance: release-name
+        component: "rootcoord"
+        
+      annotations:
+        checksum/config: 98e4f4200bd49fb9e66d81935e352fd3012b0a21fb2e398e301e02158b345925
+        
+    spec:
+      serviceAccountName: default
+      initContainers:
+      - name: config
+        command:
+        - /cp
+        - /run-helm.sh,/merge
+        - /milvus/tools/run-helm.sh,/milvus/tools/merge
+        image: "milvusdb/milvus-config-tool:v0.1.2"
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - mountPath: /milvus/tools
+          name: tools
+      containers:
+      - name: rootcoord
+        image: "milvusdb/milvus:v2.3.11"
+        imagePullPolicy: IfNotPresent
+        args: [ "/milvus/tools/run-helm.sh", "milvus", "run", "rootcoord" ]
+        env:
+        ports:
+          - name: rootcoord
+            containerPort: 53100
+            protocol: TCP
+          - name: metrics
+            containerPort: 9091
+            protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          initialDelaySeconds: 90
+          periodSeconds: 30
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          initialDelaySeconds: 90
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+        resources:
+          {}
+        volumeMounts:
+        - name: milvus-config
+          mountPath: /milvus/configs/default.yaml
+          subPath: default.yaml
+          readOnly: true
+        - name: milvus-config
+          mountPath: /milvus/configs/user.yaml
+          subPath: user.yaml
+          readOnly: true
+        - mountPath: /milvus/tools
+          name: tools
+
+      volumes:
+      - name: milvus-config
+        configMap:
+          name: release-name-milvus
+      - name: tools
+        emptyDir: {}
+---
+# Source: milvus/charts/etcd/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-etcd
+  namespace: default
+  labels:
+    app.kubernetes.io/name: etcd
+    helm.sh/chart: etcd-6.3.3
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: etcd
+      app.kubernetes.io/instance: release-name
+  serviceName: release-name-etcd-headless
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: etcd
+        helm.sh/chart: etcd-6.3.3
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+      annotations:
+    spec:
+      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: etcd
+                    app.kubernetes.io/instance: release-name
+                namespaces:
+                  - "default"
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      serviceAccountName: "default"
+      containers:
+        - name: etcd
+          image: docker.io/milvusdb/etcd:3.5.5-r4
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: MY_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: ETCDCTL_API
+              value: "3"
+            - name: ETCD_ON_K8S
+              value: "yes"
+            - name: ETCD_START_FROM_SNAPSHOT
+              value: "no"
+            - name: ETCD_DISASTER_RECOVERY
+              value: "no"
+            - name: ETCD_NAME
+              value: "$(MY_POD_NAME)"
+            - name: ETCD_DATA_DIR
+              value: "/bitnami/etcd/data"
+            - name: ETCD_LOG_LEVEL
+              value: "info"
+            - name: ALLOW_NONE_AUTHENTICATION
+              value: "yes"
+            - name: ETCD_ADVERTISE_CLIENT_URLS
+              value: "http://$(MY_POD_NAME).release-name-etcd-headless.default.svc.cluster.local:2379"
+            - name: ETCD_LISTEN_CLIENT_URLS
+              value: "http://0.0.0.0:2379"
+            - name: ETCD_INITIAL_ADVERTISE_PEER_URLS
+              value: "http://$(MY_POD_NAME).release-name-etcd-headless.default.svc.cluster.local:2380"
+            - name: ETCD_LISTEN_PEER_URLS
+              value: "http://0.0.0.0:2380"
+            - name: ETCD_AUTO_COMPACTION_MODE
+              value: "revision"
+            - name: ETCD_AUTO_COMPACTION_RETENTION
+              value: "1000"
+            - name: ETCD_QUOTA_BACKEND_BYTES
+              value: "4294967296"
+            - name: ETCD_HEARTBEAT_INTERVAL
+              value: "500"
+            - name: ETCD_ELECTION_TIMEOUT
+              value: "2500"
+          envFrom:
+          ports:
+            - name: client
+              containerPort: 2379
+              protocol: TCP
+            - name: peer
+              containerPort: 2380
+              protocol: TCP
+          livenessProbe:
+            exec:
+              command:
+                - /opt/bitnami/scripts/etcd/healthcheck.sh
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            successThreshold: 1
+            failureThreshold: 5
+          readinessProbe:
+            exec:
+              command:
+                - /opt/bitnami/scripts/etcd/healthcheck.sh
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 10
+            successThreshold: 1
+            failureThreshold: 5
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+            - name: data
+              mountPath: /bitnami/etcd
+      volumes:
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "10Gi"
+---
+# Source: milvus/charts/kafka/charts/zookeeper/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-zookeeper
+  namespace: default
+  labels:
+    app.kubernetes.io/name: zookeeper
+    helm.sh/chart: zookeeper-8.1.2
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: zookeeper
+    role: zookeeper
+spec:
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: zookeeper
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: zookeeper
+  serviceName: release-name-zookeeper-headless
+  updateStrategy:
+    rollingUpdate: {}
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+      labels:
+        app.kubernetes.io/name: zookeeper
+        helm.sh/chart: zookeeper-8.1.2
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: zookeeper
+    spec:
+      serviceAccountName: default
+      
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: zookeeper
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: zookeeper
+                namespaces:
+                  - "default"
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      securityContext:
+        fsGroup: 1001
+      initContainers:
+      containers:
+        - name: zookeeper
+          image: docker.io/bitnami/zookeeper:3.7.0-debian-10-r320
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+          command:
+            - /scripts/setup.sh
+          resources:
+            limits: {}
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: ZOO_DATA_LOG_DIR
+              value: ""
+            - name: ZOO_PORT_NUMBER
+              value: "2181"
+            - name: ZOO_TICK_TIME
+              value: "2000"
+            - name: ZOO_INIT_LIMIT
+              value: "10"
+            - name: ZOO_SYNC_LIMIT
+              value: "5"
+            - name: ZOO_PRE_ALLOC_SIZE
+              value: "65536"
+            - name: ZOO_SNAPCOUNT
+              value: "100000"
+            - name: ZOO_MAX_CLIENT_CNXNS
+              value: "60"
+            - name: ZOO_4LW_COMMANDS_WHITELIST
+              value: "srvr, mntr, ruok"
+            - name: ZOO_LISTEN_ALLIPS_ENABLED
+              value: "no"
+            - name: ZOO_AUTOPURGE_INTERVAL
+              value: "0"
+            - name: ZOO_AUTOPURGE_RETAIN_COUNT
+              value: "3"
+            - name: ZOO_MAX_SESSION_TIMEOUT
+              value: "40000"
+            - name: ZOO_SERVERS
+              value: release-name-zookeeper-0.release-name-zookeeper-headless.default.svc.cluster.local:2888:3888::1 release-name-zookeeper-1.release-name-zookeeper-headless.default.svc.cluster.local:2888:3888::2 release-name-zookeeper-2.release-name-zookeeper-headless.default.svc.cluster.local:2888:3888::3 
+            - name: ZOO_ENABLE_AUTH
+              value: "no"
+            - name: ZOO_HEAP_SIZE
+              value: "1024"
+            - name: ZOO_LOG_LEVEL
+              value: "ERROR"
+            - name: ALLOW_ANONYMOUS_LOGIN
+              value: "yes"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+          ports:
+            - name: client
+              containerPort: 2181
+            - name: follower
+              containerPort: 2888
+            - name: election
+              containerPort: 3888
+          livenessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command: ['/bin/bash', '-c', 'echo "ruok" | timeout 2 nc -w 2 localhost 2181 | grep imok']
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            exec:
+              command: ['/bin/bash', '-c', 'echo "ruok" | timeout 2 nc -w 2 localhost 2181 | grep imok']
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts/setup.sh
+              subPath: setup.sh
+            - name: data
+              mountPath: /bitnami/zookeeper
+      volumes:
+        - name: scripts
+          configMap:
+            name: release-name-zookeeper-scripts
+            defaultMode: 0755
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        annotations:
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "8Gi"
+---
+# Source: milvus/charts/kafka/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-kafka
+  namespace: "default"
+  labels:
+    app.kubernetes.io/name: kafka
+    helm.sh/chart: kafka-15.5.1
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: kafka
+spec:
+  podManagementPolicy: Parallel
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka
+      app.kubernetes.io/instance: release-name
+      app.kubernetes.io/component: kafka
+  serviceName: release-name-kafka-headless
+  updateStrategy:
+    rollingUpdate: {}
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kafka
+        helm.sh/chart: kafka-15.5.1
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: kafka
+      annotations:
+    spec:
+      
+      hostNetwork: false
+      hostIPC: false
+      affinity:
+        podAffinity:
+          
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: kafka
+                    app.kubernetes.io/instance: release-name
+                    app.kubernetes.io/component: kafka
+                namespaces:
+                  - "default"
+                topologyKey: kubernetes.io/hostname
+              weight: 1
+        nodeAffinity:
+          
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        fsGroup: 1001
+      serviceAccountName: release-name-kafka
+      containers:
+        - name: kafka
+          image: docker.io/bitnami/kafka:3.1.0-debian-10-r52
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+          command:
+            - /scripts/setup.sh
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: MY_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: KAFKA_CFG_ZOOKEEPER_CONNECT
+              value: "release-name-zookeeper"
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: "INTERNAL"
+            - name: KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "INTERNAL:PLAINTEXT,CLIENT:PLAINTEXT"
+            - name: KAFKA_CFG_LISTENERS
+              value: "INTERNAL://:9093,CLIENT://:9092"
+            - name: KAFKA_CFG_ADVERTISED_LISTENERS
+              value: "INTERNAL://$(MY_POD_NAME).release-name-kafka-headless.default.svc.cluster.local:9093,CLIENT://$(MY_POD_NAME).release-name-kafka-headless.default.svc.cluster.local:9092"
+            - name: ALLOW_PLAINTEXT_LISTENER
+              value: "yes"
+            - name: KAFKA_VOLUME_DIR
+              value: "/bitnami/kafka"
+            - name: KAFKA_LOG_DIR
+              value: "/opt/bitnami/kafka/logs"
+            - name: KAFKA_CFG_DELETE_TOPIC_ENABLE
+              value: "false"
+            - name: KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE
+              value: "true"
+            - name: KAFKA_HEAP_OPTS
+              value: "-Xmx4096m -Xms4096m"
+            - name: KAFKA_CFG_LOG_FLUSH_INTERVAL_MESSAGES
+              value: "10000"
+            - name: KAFKA_CFG_LOG_FLUSH_INTERVAL_MS
+              value: "1000"
+            - name: KAFKA_CFG_LOG_RETENTION_BYTES
+              value: "-1"
+            - name: KAFKA_CFG_LOG_RETENTION_CHECK_INTERVALS_MS
+              value: "300000"
+            - name: KAFKA_CFG_LOG_RETENTION_HOURS
+              value: "168"
+            - name: KAFKA_CFG_MESSAGE_MAX_BYTES
+              value: "10485760"
+            - name: KAFKA_CFG_LOG_SEGMENT_BYTES
+              value: "1073741824"
+            - name: KAFKA_CFG_LOG_DIRS
+              value: "/bitnami/kafka/data"
+            - name: KAFKA_CFG_DEFAULT_REPLICATION_FACTOR
+              value: "3"
+            - name: KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "3"
+            - name: KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+            - name: KAFKA_CFG_NUM_IO_THREADS
+              value: "8"
+            - name: KAFKA_CFG_NUM_NETWORK_THREADS
+              value: "3"
+            - name: KAFKA_CFG_NUM_PARTITIONS
+              value: "1"
+            - name: KAFKA_CFG_NUM_RECOVERY_THREADS_PER_DATA_DIR
+              value: "1"
+            - name: KAFKA_CFG_SOCKET_RECEIVE_BUFFER_BYTES
+              value: "102400"
+            - name: KAFKA_CFG_SOCKET_REQUEST_MAX_BYTES
+              value: "104857600"
+            - name: KAFKA_CFG_SOCKET_SEND_BUFFER_BYTES
+              value: "102400"
+            - name: KAFKA_CFG_ZOOKEEPER_CONNECTION_TIMEOUT_MS
+              value: "6000"
+            - name: KAFKA_CFG_AUTHORIZER_CLASS_NAME
+              value: ""
+            - name: KAFKA_CFG_ALLOW_EVERYONE_IF_NO_ACL_FOUND
+              value: "true"
+            - name: KAFKA_CFG_SUPER_USERS
+              value: "User:admin"
+            - name: KAFKA_CFG_MAX_PARTITION_FETCH_BYTES
+              value: "5242880"
+            - name: KAFKA_CFG_MAX_REQUEST_SIZE
+              value: "5242880"
+            - name: KAFKA_CFG_REPLICA_FETCH_MAX_BYTES
+              value: "10485760"
+            - name: KAFKA_CFG_FETCH_MESSAGE_MAX_BYTES
+              value: "5242880"
+            - name: KAFKA_CFG_LOG_ROLL_HOURS
+              value: "24"
+          ports:
+            - name: kafka-client
+              containerPort: 9092
+            - name: kafka-internal
+              containerPort: 9093
+          livenessProbe:
+            failureThreshold: 3
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            tcpSocket:
+              port: kafka-client
+          readinessProbe:
+            failureThreshold: 6
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+            tcpSocket:
+              port: kafka-client
+          startupProbe:
+            failureThreshold: 15
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+            tcpSocket:
+              port: kafka-client
+          resources:
+            limits: {}
+            requests: {}
+          volumeMounts:
+            - name: data
+              mountPath: /bitnami/kafka
+            - name: logs
+              mountPath: /opt/bitnami/kafka/logs
+            - name: scripts
+              mountPath: /scripts/setup.sh
+              subPath: setup.sh
+      volumes:
+        - name: scripts
+          configMap:
+            name: release-name-kafka-scripts
+            defaultMode: 0755
+        - name: logs
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: "100Gi"
+        
+        storageClassName: longhorn
+---
+# Source: milvus/charts/minio/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: release-name-minio
+  labels:
+    app: minio
+    chart: minio-8.0.17
+    release: release-name
+    heritage: Helm
+spec:
+  updateStrategy:
+    type: RollingUpdate
+  podManagementPolicy: "Parallel"
+  serviceName: release-name-minio-svc
+  replicas: 4
+  selector:
+    matchLabels:
+      app: minio
+      release: release-name
+  template:
+    metadata:
+      name: release-name-minio
+      labels:
+        app: minio
+        release: release-name
+      annotations:
+        checksum/secrets: 7e91363d5d3c380ea9d8d033a123c7a6c57d4315a586f36da973463bc0412ccb
+        checksum/config: 821822c97fd9a6157caaeb3852393c4ee28ef77dc89d042ba7d16450fc8d45c8
+    spec:
+      serviceAccountName: "release-name-minio"
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: minio
+          image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+          imagePullPolicy: IfNotPresent
+
+          command: [ "/bin/sh",
+            "-ce",
+            "/usr/bin/docker-entrypoint.sh minio -S /etc/minio/certs/ server  http://release-name-minio-{0...3}.release-name-minio-svc.default.svc.cluster.local/export" ]
+          volumeMounts:
+            - name: export
+              mountPath: /export            
+          ports:
+            - name: http
+              containerPort: 9000
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 5
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 1
+            successThreshold: 1
+            failureThreshold: 5
+          startupProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 60
+          env:
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-minio
+                  key: accesskey
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: release-name-minio
+                  key: secretkey
+          resources:
+            requests:
+              memory: 2Gi      
+      volumes:
+        - name: minio-user
+          secret:
+            secretName: release-name-minio        
+  volumeClaimTemplates:
+    - metadata:
+        name: export
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 300Gi
+---
+# Source: milvus/charts/pulsar/templates/bookkeeper-statefulset.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "release-name-pulsar-bookie"
+  namespace: default
+  labels:
+    app: pulsar
+    chart: pulsar-2.7.8
+    release: release-name
+    heritage: Helm
+    cluster: release-name-pulsar
+    component: bookie
+spec:
+  serviceName: "release-name-pulsar-bookie"
+  replicas: 2
+  selector:
+    matchLabels:
+      app: pulsar
+      release: release-name
+      component: bookie
+  updateStrategy:
+    type: RollingUpdate
+  podManagementPolicy: Parallel
+  template:
+    metadata:
+      labels:
+        app: pulsar
+        release: release-name
+        cluster: release-name-pulsar
+        component: bookie
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+    spec:
+      affinity:
+      terminationGracePeriodSeconds: 30
+      initContainers:
+      # This initContainer will wait for bookkeeper initnewcluster to complete
+      # before deploying the bookies
+      - name: pulsar-bookkeeper-verify-clusterid
+        image: "apachepulsar/pulsar:2.8.2"
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c"]
+        args:
+        # only reformat bookie if bookkeeper is running without persistence
+        - >
+          
+          set -e;
+          bin/apply-config-from-env.py conf/bookkeeper.conf;until bin/bookkeeper shell whatisinstanceid; do
+            sleep 3;
+          done;
+        envFrom:
+        - configMapRef:
+            name: "release-name-pulsar-bookie"
+        volumeMounts:
+        
+      containers:
+      - name: "release-name-pulsar-bookie"
+        image: "apachepulsar/pulsar:2.8.2"
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          httpGet:
+            path: /api/v1/bookie/state
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 60
+        readinessProbe:
+          httpGet:
+            path: /api/v1/bookie/is_ready
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 60
+        resources:
+          requests:
+            cpu: 0.01
+            memory: 256Mi
+        command: ["sh", "-c"]
+        args:
+        - >
+          bin/apply-config-from-env.py conf/bookkeeper.conf;
+          
+          OPTS="${OPTS} -Dlog4j2.formatMsgNoLookups=true" exec bin/pulsar bookie;
+        ports:
+        - name: "bookie"
+          containerPort: 3181
+        - name: http
+          containerPort: 8000
+        envFrom:
+        - configMapRef:
+            name: "release-name-pulsar-bookie"
+        volumeMounts:
+        - name: "release-name-pulsar-bookie-journal"
+          mountPath: /pulsar/data/bookkeeper/journal
+        - name: "release-name-pulsar-bookie-ledgers"
+          mountPath: /pulsar/data/bookkeeper/ledgers
+        
+      volumes:
+      
+      
+  volumeClaimTemplates:
+  - metadata:
+      name: "release-name-pulsar-bookie-journal"
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 100Gi
+  - metadata:
+      name: "release-name-pulsar-bookie-ledgers"
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 150Gi
+---
+# Source: milvus/charts/pulsar/templates/broker-statefulset.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "release-name-pulsar-broker"
+  namespace: default
+  labels:
+    app: pulsar
+    chart: pulsar-2.7.8
+    release: release-name
+    heritage: Helm
+    cluster: release-name-pulsar
+    component: broker
+spec:
+  serviceName: "release-name-pulsar-broker"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pulsar
+      release: release-name
+      component: broker
+  updateStrategy:
+    type: RollingUpdate
+  podManagementPolicy: Parallel
+  template:
+    metadata:
+      labels:
+        app: pulsar
+        release: release-name
+        cluster: release-name-pulsar
+        component: broker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      serviceAccountName: "release-name-pulsar-broker-acct"
+      affinity:
+      terminationGracePeriodSeconds: 30
+      initContainers:
+      # This init container will wait for zookeeper to be ready before
+      # deploying the bookies
+      - name: wait-zookeeper-ready
+        image: "apachepulsar/pulsar:2.8.2"
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c"]
+        args:
+          - >-
+            
+            until bin/bookkeeper org.apache.zookeeper.ZooKeeperMain -server release-name-pulsar-zookeeper:2181 get /admin/clusters/release-name-pulsar; do
+              echo "pulsar cluster release-name-pulsar isn't initialized yet ... check in 3 seconds ..." && sleep 3;
+            done;
+        volumeMounts:
+        
+      # This init container will wait for bookkeeper to be ready before
+      # deploying the broker
+      - name: wait-bookkeeper-ready
+        image: "apachepulsar/pulsar:2.8.2"
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c"]
+        args:
+          - >
+            
+            bin/apply-config-from-env.py conf/bookkeeper.conf;
+            until bin/bookkeeper shell whatisinstanceid; do
+              echo "bookkeeper cluster is not initialized yet. backoff for 3 seconds ...";
+              sleep 3;
+            done;
+            echo "bookkeeper cluster is already initialized";
+            bookieServiceNumber="$(nslookup -timeout=10 release-name-pulsar-bookie | grep Name | wc -l)";
+            until [ ${bookieServiceNumber} -ge 2 ]; do
+              echo "bookkeeper cluster release-name-pulsar isn't ready yet ... check in 10 seconds ...";
+              sleep 10;
+              bookieServiceNumber="$(nslookup -timeout=10 release-name-pulsar-bookie | grep Name | wc -l)";
+            done;
+            echo "bookkeeper cluster is ready";
+        envFrom:
+          - configMapRef:
+              name: "release-name-pulsar-bookie"
+        volumeMounts:
+          
+      containers:
+      - name: "release-name-pulsar-broker"
+        image: "apachepulsar/pulsar:2.8.2"
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          httpGet:
+            path: /status.html
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 10
+        readinessProbe:
+          httpGet:
+            path: /status.html
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 10
+        resources:
+          requests:
+            cpu: 0.01
+            memory: 256Mi
+        command: ["sh", "-c"]
+        args:
+        - >
+          bin/apply-config-from-env.py conf/broker.conf;
+          bin/gen-yml-from-env.py conf/functions_worker.yml;
+          echo "OK" > status;
+          
+          bin/pulsar zookeeper-shell -server release-name-pulsar-zookeeper:2181 get /loadbalance/brokers/${HOSTNAME}.release-name-pulsar-broker.default.svc.cluster.local:8080;
+          while [ $? -eq 0 ]; do
+            echo "broker ${HOSTNAME}.release-name-pulsar-broker.default.svc.cluster.local znode still exists ... check in 10 seconds ...";
+            sleep 10;
+            bin/pulsar zookeeper-shell -server release-name-pulsar-zookeeper:2181 get /loadbalance/brokers/${HOSTNAME}.release-name-pulsar-broker.default.svc.cluster.local:8080;
+          done;
+          cat conf/pulsar_env.sh;
+          OPTS="${OPTS} -Dlog4j2.formatMsgNoLookups=true" exec bin/pulsar broker;
+        ports:
+        # prometheus needs to access /metrics endpoint
+        - name: http
+          containerPort: 8080
+        - name: "pulsar"
+          containerPort: 6650
+        envFrom:
+        - configMapRef:
+            name: "release-name-pulsar-broker"
+        volumeMounts:
+          
+      volumes:
+---
+# Source: milvus/charts/pulsar/templates/proxy-statefulset.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "release-name-pulsar-proxy"
+  namespace: default
+  labels:
+    app: pulsar
+    chart: pulsar-2.7.8
+    release: release-name
+    heritage: Helm
+    cluster: release-name-pulsar
+    component: proxy
+spec:
+  serviceName: "release-name-pulsar-proxy"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pulsar
+      release: release-name
+      component: proxy
+  updateStrategy:
+    type: RollingUpdate
+  podManagementPolicy: Parallel
+  template:
+    metadata:
+      labels:
+        app: pulsar
+        release: release-name
+        cluster: release-name-pulsar
+        component: proxy
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "80"
+    spec:
+      affinity:
+      terminationGracePeriodSeconds: 30
+      initContainers:
+      # This init container will wait for zookeeper to be ready before
+      # deploying the bookies
+      - name: wait-zookeeper-ready
+        image: "apachepulsar/pulsar:2.8.2"
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c"]
+        args:
+          - >-
+            until bin/pulsar zookeeper-shell -server release-name-pulsar-zookeeper get /admin/clusters/release-name-pulsar; do
+              sleep 3;
+            done;
+      # This init container will wait for at least one broker to be ready before
+      # deploying the proxy
+      - name: wait-broker-ready
+        image: "apachepulsar/pulsar:2.8.2"
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c"]
+        args:
+          - >-
+            set -e;
+            brokerServiceNumber="$(nslookup -timeout=10 release-name-pulsar-broker | grep Name | wc -l)";
+            until [ ${brokerServiceNumber} -ge 1 ]; do
+              echo "pulsar cluster release-name-pulsar isn't initialized yet ... check in 10 seconds ...";
+              sleep 10;
+              brokerServiceNumber="$(nslookup -timeout=10 release-name-pulsar-broker | grep Name | wc -l)";
+            done;
+      containers:
+      - name: "release-name-pulsar-proxy"
+        image: "apachepulsar/pulsar:2.8.2"
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          httpGet:
+            path: /status.html
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 10
+        readinessProbe:
+          httpGet:
+            path: /status.html
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 10
+        resources:
+          requests:
+            cpu: 1
+            memory: 2048Mi
+        command: ["sh", "-c"]
+        args:
+        - >
+          bin/apply-config-from-env.py conf/proxy.conf &&
+          echo "OK" > status &&
+          OPTS="${OPTS} -Dlog4j2.formatMsgNoLookups=true" exec bin/pulsar proxy
+        ports:
+        # prometheus needs to access /metrics endpoint
+        - name: http
+          containerPort: 80
+        - name: "pulsar"
+          containerPort: 6650
+        envFrom:
+        - configMapRef:
+            name: "release-name-pulsar-proxy"
+---
+# Source: milvus/charts/pulsar/templates/zookeeper-statefulset.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+# deploy zookeeper only when `components.zookeeper` is true
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "release-name-pulsar-zookeeper"
+  namespace: default
+  labels:
+    app: pulsar
+    chart: pulsar-2.7.8
+    release: release-name
+    heritage: Helm
+    cluster: release-name-pulsar
+    component: zookeeper
+spec:
+  serviceName: "release-name-pulsar-zookeeper"
+  replicas: 3
+  selector:
+    matchLabels:
+      app: pulsar
+      release: release-name
+      component: zookeeper
+  updateStrategy:
+    type: RollingUpdate
+  podManagementPolicy: OrderedReady
+  template:
+    metadata:
+      labels:
+        app: pulsar
+        release: release-name
+        cluster: release-name-pulsar
+        component: zookeeper
+      annotations:
+        prometheus.io/port: "8000"
+        prometheus.io/scrape: "true"
+    spec:
+      affinity:
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: "release-name-pulsar-zookeeper"
+        image: "apachepulsar/pulsar:2.8.2"
+        imagePullPolicy: IfNotPresent
+        resources:
+          requests:
+            cpu: 0.01
+            memory: 256Mi
+        command: ["sh", "-c"]
+        args:
+        - >
+          bin/apply-config-from-env.py conf/zookeeper.conf;
+          
+          bin/generate-zookeeper-config.sh conf/zookeeper.conf;
+          OPTS="${OPTS} -Dlog4j2.formatMsgNoLookups=true" exec bin/pulsar zookeeper;
+        ports:
+        # prometheus needs to access /metrics endpoint
+        - name: http
+          containerPort: 8000
+        - name: client
+          containerPort: 2181
+        - name: follower
+          containerPort: 2888
+        - name: leader-election
+          containerPort: 3888
+        env:
+        - name: ZOOKEEPER_SERVERS
+          value:
+            release-name-pulsar-zookeeper-0,release-name-pulsar-zookeeper-1,release-name-pulsar-zookeeper-2
+        envFrom:
+        - configMapRef:
+            name: "release-name-pulsar-zookeeper"
+        readinessProbe:
+          exec:
+            command:
+            - bin/pulsar-zookeeper-ruok.sh
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 10
+        livenessProbe:
+          exec:
+            command:
+            - bin/pulsar-zookeeper-ruok.sh
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 10
+        volumeMounts:
+        - name: "release-name-pulsar-zookeeper-data"
+          mountPath: /pulsar/data
+      volumes:
+  volumeClaimTemplates:
+  - metadata:
+      name: "release-name-pulsar-zookeeper-data"
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 20Gi
+---
+# Source: milvus/charts/pulsar/templates/bookkeeper-cluster-initialize.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "release-name-pulsar-bookie-init"
+  namespace: default
+  labels:
+    app: pulsar
+    chart: pulsar-2.7.8
+    release: release-name
+    heritage: Helm
+    cluster: release-name-pulsar
+    component: "bookie-init"
+spec:
+  template:
+    spec:
+      initContainers:
+      - name: wait-zookeeper-ready
+        image: "apachepulsar/pulsar:2.8.2"
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c"]
+        args:
+          - >-
+            until nslookup release-name-pulsar-zookeeper-2.release-name-pulsar-zookeeper.default; do
+              sleep 3;
+            done;
+      containers:
+      - name: "release-name-pulsar-bookie-init"
+        image: "apachepulsar/pulsar:2.8.2"
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c"]
+        args:
+          - >
+            bin/apply-config-from-env.py conf/bookkeeper.conf;
+            
+            if bin/bookkeeper shell whatisinstanceid; then
+                echo "bookkeeper cluster already initialized";
+            else
+                bin/bookkeeper shell initnewcluster;
+            fi
+        envFrom:
+        - configMapRef:
+            name: "release-name-pulsar-bookie"
+        volumeMounts:
+        
+      volumes:
+      
+      restartPolicy: Never
+---
+# Source: milvus/charts/pulsar/templates/pulsar-cluster-initialize.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "release-name-pulsar-pulsar-init"
+  namespace: default
+  labels:
+    app: pulsar
+    chart: pulsar-2.7.8
+    release: release-name
+    heritage: Helm
+    cluster: release-name-pulsar
+    component: pulsar-init
+spec:
+  template:
+    spec:
+      initContainers:
+      - name: wait-zookeeper-ready
+        image: "apachepulsar/pulsar:2.8.2"
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c"]
+        args:
+          - >-
+            until nslookup release-name-pulsar-zookeeper-2.release-name-pulsar-zookeeper.default; do
+              sleep 3;
+            done;
+      # This initContainer will wait for bookkeeper initnewcluster to complete
+      # before initializing pulsar metadata
+      - name: pulsar-bookkeeper-verify-clusterid
+        image: "apachepulsar/pulsar:2.8.2"
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c"]
+        args:
+        - >
+          bin/apply-config-from-env.py conf/bookkeeper.conf;
+          
+          until bin/bookkeeper shell whatisinstanceid; do
+            sleep 3;
+          done;
+        envFrom:
+        - configMapRef:
+            name: "release-name-pulsar-bookie"
+        volumeMounts:
+        
+      containers:
+      - name: "release-name-pulsar-pulsar-init"
+        image: "apachepulsar/pulsar:2.8.2"
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c"]
+        args:
+          - |
+            
+            bin/pulsar initialize-cluster-metadata \
+              --cluster release-name-pulsar \
+              --zookeeper release-name-pulsar-zookeeper:2181 \
+              --configuration-store release-name-pulsar-zookeeper:2181 \
+              --web-service-url http://release-name-pulsar-broker.default.svc.cluster.local:8080/ \
+              --web-service-url-tls https://release-name-pulsar-broker.default.svc.cluster.local:8443/ \
+              --broker-service-url pulsar://release-name-pulsar-broker.default.svc.cluster.local:6650/ \
+              --broker-service-url-tls pulsar+ssl://release-name-pulsar-broker.default.svc.cluster.local:6651/ ;
+        volumeMounts:
+        
+      volumes:
+      
+      restartPolicy: OnFailure
+---
+# Source: milvus/charts/pulsar/templates/autorecovery-configmap.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/autorecovery-podmonitor.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+# deploy broker PodMonitor only when `$.Values.broker.podMonitor.enabled` is true
+---
+# Source: milvus/charts/pulsar/templates/autorecovery-rbac.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/autorecovery-service.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/autorecovery-statefulset.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/bookkeeper-pdb.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/bookkeeper-podmonitor.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+# deploy bookkeeper PodMonitor only when `$.Values.bookkeeper.podMonitor.enabled` is true
+---
+# Source: milvus/charts/pulsar/templates/bookkeeper-rbac.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/bookkeeper-storageclass.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/broker-pdb.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/broker-podmonitor.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+# deploy broker PodMonitor only when `$.Values.broker.podMonitor.enabled` is true
+---
+# Source: milvus/charts/pulsar/templates/broker-rbac.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/dashboard-deployment.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/dashboard-ingress.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/dashboard-service.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/function-worker-configmap.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/grafana-admin-secret.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/grafana-configmap.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/grafana-deployment.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/grafana-ingress.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/grafana-service.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/keytool.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+# script to process key/cert to keystore and truststore
+---
+# Source: milvus/charts/pulsar/templates/namespace.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/prometheus-configmap.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/prometheus-deployment.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/prometheus-pvc.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/prometheus-rbac.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/prometheus-service.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/prometheus-storageclass.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/proxy-ingress.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/proxy-pdb.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/proxy-podmonitor.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+# deploy proxy PodMonitor only when `$.Values.proxy.podMonitor.enabled` is true
+---
+# Source: milvus/charts/pulsar/templates/proxy-rbac.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/pulsar-manager-admin-secret.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/pulsar-manager-configmap.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/pulsar-manager-deployment.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/pulsar-manager-ingress.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/pulsar-manager-service.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/tls-cert-internal-issuer.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/tls-certs-internal.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/toolset-configmap.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/toolset-rbac.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/toolset-service.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/toolset-statefulset.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/zookeeper-pdb.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+# deploy zookeeper only when `components.zookeeper` is true
+---
+# Source: milvus/charts/pulsar/templates/zookeeper-podmonitor.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+# deploy zookeeper PodMonitor only when `$.Values.zookeeper.podMonitor.enabled` is true
+---
+# Source: milvus/charts/pulsar/templates/zookeeper-rbac.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+---
+# Source: milvus/charts/pulsar/templates/zookeeper-storageclass.yaml
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+# deploy zookeeper only when `components.zookeeper` is true
+
+# define the storage class for data directory

@@ -1,0 +1,74 @@
+---
+- hosts: workers
+  become: yes
+  tasks:
+    - name: Check by pinging
+      ansible.builtin.ping:
+
+    - name: Making Folders for data partitions
+      ansible.builtin.shell:
+        cmd: sudo mkdir -p /data/longhorn-storage
+
+    - name: Install open-iscsi and nfs
+      ansible.builtin.apt:
+        update_cache: yes
+        name:
+          - open-iscsi
+          - nfs-common
+        state: present
+
+- hosts: localhost
+  become: true
+  gather_facts: true
+  connection: local
+
+  vars:
+    helm_binary: /usr/local/bin/helm
+    kubeconfig: "/home/epc/config"
+  
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+
+  tasks:
+    
+    - name: Check if Helm is installed
+      ansible.builtin.stat:
+        path: "{{ helm_binary }}"
+      register: helm_binary_status
+      ignore_errors: yes
+
+    - name: Install Helm chart
+      ansible.builtin.shell:
+        cmd: curl -sSL https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+      when: helm_binary_status.stat.exists == false
+    # ??
+    - name: Install NFS
+      ansible.builtin.apt:
+        update_cache: yes
+        name:
+          - nfs-common
+        state: present
+
+    - name: Add Longhorn Helm repository
+      ansible.builtin.shell:
+        cmd: |
+          cd /home/epc/auto_configuration/longhorn
+          helm repo add longhorn https://charts.longhorn.io 
+      when: helm_binary_status.stat.exists == true
+
+    - name: Update Helm repositories
+      ansible.builtin.shell:
+        cmd: helm repo update
+      when: helm_binary_status.stat.exists == true
+
+    - name: Install Longhorn using Helm
+      ansible.builtin.shell:
+        cmd: helm install longhorn longhorn/longhorn --namespace longhorn-system --create-namespace
+      when: helm_binary_status.stat.exists ==true
+
+    - name: Apply Longhorn Storage Class Delete and Retain reclaimPolicy
+      ansible.builtin.shell:
+        cmd: |
+          kubectl apply -f longhorn-storageclass-delete.yaml
+          kubectl apply -f longhorn-storageclass-retain.yaml
+      when: helm_binary_status.stat.exists == true

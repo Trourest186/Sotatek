@@ -1,0 +1,36 @@
+auth:
+  enabled: true
+  rootUser: root
+  rootPassword: "Admin_123"
+  
+shards: 4
+
+service:
+  type: NodePort
+  externalTrafficPolicy: Cluster
+  ports:
+    mongodb: 27017  
+  clusterIP: ""
+  nodePorts:
+    mongodb: "32000"    
+    
+configsvr:    
+  replicaCount: 3
+  podAntiAffinityPreset: soft  
+  persistence:
+    enabled: true    
+    storageClass: "longhorn"
+    size: 8Gi  
+    
+mongos:
+  replicaCount: 2
+  podAntiAffinityPreset: soft  
+  
+shardsvr:
+  dataNode:
+    replicaCount: 3    
+    podAntiAffinityPreset: soft    
+  persistence:
+    enabled: true    
+    storageClass: "longhorn"
+    size: 8Gi

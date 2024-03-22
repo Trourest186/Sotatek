@@ -1,0 +1,19 @@
+# templates/persistentvolume.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ .Values.pv.name }}
+  labels:
+    type: {{ .Values.pv.labels.type }}
+spec:
+  storageClassName: {{ .Values.pv.storageClassName }}
+  capacity:
+    storage: {{ .Values.pv.capacity }}
+  accessModes:
+    - {{ .Values.pv.accessModes }}
+  hostPath:
+    path: {{ .Values.pv.hostPath.path }}
+  # nfs:
+  #   path: "/data/mydata/"
+  #   server: {{ .Values.server_NFS }}
+

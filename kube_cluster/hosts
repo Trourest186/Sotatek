@@ -1,0 +1,12 @@
+[control_plane]
+EPC02 ansible_host=192.168.11.147 ansible_user=epc
+
+[workers]
+EPC03 ansible_host=192.168.11.148 ansible_user=epc
+EPC04 ansible_host=192.168.11.149 ansible_user=epc
+EPC05 ansible_host=192.168.11.151 ansible_user=epc
+EPC06 ansible_host=192.168.11.152 ansible_user=epc
+EPC07 ansible_host=192.168.11.153 ansible_user=epc
+
+[all:vars]
+ansible_python_interpreter=/usr/bin/python3

@@ -1,0 +1,30 @@
+---
+- hosts: workers
+  gather_facts: false
+  become: true
+  remote_user: epc
+
+  tasks:
+    - name: Ping
+      ansible.builtin.ping:
+
+    - name: Capture the output of the command
+      ansible.builtin.command: grep -A 1 'kubeadm join' ./logs/master_file.log >> master_file.log
+      delegate_to: localhost
+
+    - name: Copy execute file for worker hosts
+      ansible.builtin.copy:
+        src: ./logs/master_file.sh
+        dest: /home/epc
+        owner: epc
+        group: epc
+        mode: '0777'
+
+    - name: Permission for file
+      ansible.builtin.shell:
+        cmd: chmod +x /home/epc/master_file.sh
+
+    - name: Run file
+      ansible.builtin.shell:
+        cmd: ./master_file.sh
+

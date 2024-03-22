@@ -1,0 +1,48 @@
+---
+- hosts: localhost
+  gather_facts: false
+  become: true
+  connection: local
+
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    kubeconfig: "/home/epc/config"
+  
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+
+  tasks:
+  - name: Check by pingging
+    ansible.builtin.ping:
+
+  - name: Check if Helm is installed
+    ansible.builtin.stat:
+      path: "{{ helm_binary }}"
+    register: helm_binary_status
+    ignore_errors: yes
+
+  - name: Install helm chart
+    ansible.builtin.shell:
+      cmd: curl -sSL https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+    when: him_binary_status.stat.exists == false  
+
+  - name: Intall pre-requisites
+    pip:
+      name: 
+        - kubernetes
+  
+  - name: Create a K8s namspace
+    kubernetes.core.k8s:
+      name: ingress-nginx
+      api_version: v1
+      kind: Namespace
+      state: present
+
+  - name: Upgrade and install ingress-nginx
+    kubernetes.core.helm:
+      name: ingress-nginx
+      chart_ref: ingress-nginx
+      chart_repo_url: https://kubernetes.github.io/ingress-nginx
+      release_namespace: ingress-nginx
+      state: present
+    when: helm_binary_status.stat.exists == true

@@ -1,0 +1,13 @@
+Release "elasticsearch" has been upgraded. Happy Helming!
+NAME: elasticsearch
+LAST DEPLOYED: Thu Mar 21 11:32:15 2024
+NAMESPACE: elastic-system
+STATUS: deployed
+REVISION: 6
+NOTES:
+1. Watch all cluster members come up.
+  $ kubectl get pods --namespace=elastic-system -l app=elasticsearch-master -w
+2. Retrieve elastic user's password.
+  $ kubectl get secrets --namespace=elastic-system elasticsearch-master-credentials -ojsonpath='{.data.password}' | base64 -d
+3. Test cluster health using Helm test.
+  $ helm --namespace=elastic-system test elasticsearch

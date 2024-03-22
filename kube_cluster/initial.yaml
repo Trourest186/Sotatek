@@ -1,0 +1,17 @@
+---
+- hosts: all
+  become: yes
+  tasks:
+    - name: Ping
+      ansible.builtin.ping:
+
+    - name: Allow 'epc' to have passwordless sudo
+      ansible.builtin.lineinfile:
+        path: /etc/sudoers
+        line: 'epc ALL=(ALL) NOPASSWD: ALL'
+        validate: 'visudo -cf %s'
+
+    - name: Set up authorized keys for the epc user
+      ansible.posix.authorized_key:
+        user: epc
+        key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"

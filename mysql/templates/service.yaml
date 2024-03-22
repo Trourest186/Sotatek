@@ -1,0 +1,16 @@
+# templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.service.name }}
+spec:
+  clusterIP: None
+  type: {{ .Values.service.type }}
+  ports:
+  - port: {{ .Values.service.port }}
+    protocol: TCP
+    name: tcp
+    targetPort: 3306
+  selector:
+    app: {{ .Values.deployment.name }}
+

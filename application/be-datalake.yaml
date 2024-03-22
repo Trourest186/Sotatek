@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: application-be
+  namespace: application
+spec:
+  selector:
+    matchLabels:
+      app: be
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: be
+    spec:
+      imagePullSecrets:
+        - name: regcred
+      containers:
+        - name: application-be
+          image: registry.sotaicg.com/testk8s/be-platform
+          ports:
+          - containerPort: 80
+            name: http
+            protocol: TCP
+          envFrom:
+            - secretRef:
+                name: backend-environment
+                
+

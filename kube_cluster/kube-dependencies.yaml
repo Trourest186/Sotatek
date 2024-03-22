@@ -1,0 +1,109 @@
+---
+- hosts: workers
+  gather_facts: false
+  become: yes
+  remote_user: epc
+
+  vars:
+    OS: xUbuntu_22.04
+    CRIO_VERSION: 1.26
+
+  tasks:
+
+    - name: Add Kubernetes APT repository
+      ansible.builtin.shell:
+        cmd: |
+          echo "deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/{{ OS }}/ /" | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list
+          echo "deb http://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable:/cri-o:/{{ CRIO_VERSION }}/{{ OS }}/ /" | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:stable:cri-o:{{ CRIO_VERSION }}.list
+
+    - name: Add Kubernetes apt-key
+      ansible.builtin.shell:
+        cmd: |
+          curl -L https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable:cri-o:{{ CRIO_VERSION }}/{{ OS }}/Release.key | sudo apt-key --keyring /etc/apt/trusted.gpg.d/libcontainers.gpg add -
+          curl -L https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/{{ OS }}/Release.key | sudo apt-key --keyring /etc/apt/trusted.gpg.d/libcontainers.gpg add -
+
+    - name: Update apt and install cri-o packages
+      ansible.builtin.apt:
+        update_cache: yes
+        name:
+          - cri-o
+          - cri-o-runc
+          - cri-tools
+          - gpg
+          - ca-certificates
+          - expect
+        state: present
+
+    - name: Start Crio for all machine
+      ansible.builtin.shell:
+        cmd: sudo systemctl start crio
+
+    - name: Install Apt transports HTTPS
+      ansible.builtin.apt:
+        update_cache: yes
+        name: apt-transport-https
+        state: present
+
+    - name: Add Kubernetes APT key using Ansible
+      ansible.builtin.get_url:
+        url: https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key
+        dest: /tmp/Release.key
+      become: yes
+
+    - name: Convert key
+      ansible.builtin.shell: |
+        set timeout 10      
+        sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg /tmp/Release.key
+
+        expect {
+          "Overwrite" {
+            send "y\n"
+          }
+          timeout {
+           send_user "Unexpected output\n"
+           exit 1
+          }
+        }
+
+        interact
+
+        exit 0
+      args:
+        executable: /usr/bin/expect
+
+    - name: Add Repository
+      ansible.builtin.apt_repository:
+        repo: deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /
+        state: present
+        filename: kubernetes
+
+    - name: Install kubelet
+      ansible.builtin.apt:
+        update_cache: yes
+        name: kubelet
+        state: present
+
+    - name: Install kubeadm
+      ansible.builtin.apt:
+        update_cache: yes
+        name: kubeadm
+        state: present
+
+- hosts: localhost
+  gather_facts: false
+  become: yes
+  connection: local
+
+  tasks:
+  # - name: Install kubectl
+  #   ansible.builtin.apt:
+  #     update_cache: yes
+  #     name: kubectl
+  #     state: present
+  #     force: yes
+  
+  - name: Setup for master
+    ansible.builtin.shell:
+      cmd: ./execution_file/master.sh
+
+
